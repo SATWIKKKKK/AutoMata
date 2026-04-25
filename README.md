@@ -47,7 +47,7 @@ A fully autonomous, self-correcting workflow is live. Running every week. Costin
 
 ---
 
-## Why Orren is Different
+## Why AutoMata is Different
 
 | Feature | Zapier / Make | n8n | **AutoMata** |
 |---|---|---|---|
