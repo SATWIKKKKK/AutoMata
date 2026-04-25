@@ -38,7 +38,7 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
       <div className={cn("mb-12 px-4 flex items-center", isCollapsed ? "justify-center" : "justify-between")}>
         {!isCollapsed && (
           <div className="overflow-hidden whitespace-nowrap">
-            <h1 className="font-serif italic text-3xl text-blueprint-accent tracking-tight">ORREN</h1>
+            <h1 className="font-serif italic text-3xl text-blueprint-accent tracking-tight">AUTOMATA</h1>
             <p className="text-technical-mono text-blueprint-muted mt-1">v2.4.0-stable</p>
           </div>
         )}
@@ -86,8 +86,10 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
 
       <div className="mt-auto border-t border-blueprint-line pt-4 flex flex-col gap-1 px-2">
         <button 
+          onClick={() => onViewChange('docs')}
           className={cn(
-            "flex items-center gap-3 px-4 py-3 rounded-lg text-ui-label text-blueprint-muted hover:bg-blueprint-line/20 transition-all overflow-hidden",
+            "flex items-center gap-3 px-4 py-3 rounded-lg text-ui-label transition-all overflow-hidden",
+            currentView === 'docs' ? "bg-blueprint-line/40 text-blueprint-accent font-semibold" : "text-blueprint-muted hover:bg-blueprint-line/20",
             isCollapsed && "justify-center px-0"
           )}
           title="Documentation"
@@ -96,8 +98,10 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
           {!isCollapsed && <span className="whitespace-nowrap">Docs</span>}
         </button>
         <button 
+          onClick={() => onViewChange('settings')}
           className={cn(
-            "flex items-center gap-3 px-4 py-3 rounded-lg text-ui-label text-blueprint-muted hover:bg-blueprint-line/20 transition-all overflow-hidden",
+            "flex items-center gap-3 px-4 py-3 rounded-lg text-ui-label transition-all overflow-hidden",
+            currentView === 'settings' ? "bg-blueprint-line/40 text-blueprint-accent font-semibold" : "text-blueprint-muted hover:bg-blueprint-line/20",
             isCollapsed && "justify-center px-0"
           )}
           title="Settings"

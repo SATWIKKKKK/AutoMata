@@ -25,6 +25,13 @@
     background-position: center top;
   }
 
+  .bg-technical-grid {
+    background-size: 64px 64px;
+    background-image: 
+        linear-gradient(to right, #e4e2e2 1px, transparent 1px),
+        linear-gradient(to bottom, #e4e2e2 1px, transparent 1px);
+  }
+
   /* Custom Scrollbar */
   ::-webkit-scrollbar {
     width: 6px;

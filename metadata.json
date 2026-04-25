@@ -1,5 +1,5 @@
 {
-  "name": "Orren Platform",
+  "name": "Automata Platform",
   "description": "Multi-agent orchestration platform integrating LangGraph precision with Temporal.io durability for complex AI workflows.",
   "requestFramePermissions": [],
   "majorCapabilities": ["AI Workflow Orchestration", "DAG Editor", "Real-time Monitoring"]
