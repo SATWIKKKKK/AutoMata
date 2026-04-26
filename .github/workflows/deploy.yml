@@ -31,8 +31,10 @@ jobs:
         run: |
           docker build -t ghcr.io/${{ github.repository }}/api:latest -f Dockerfile.api .
           docker build -t ghcr.io/${{ github.repository }}/worker:latest -f Dockerfile.worker .
+          docker build -t ghcr.io/${{ github.repository }}/frontend:latest -f Dockerfile .
           docker push ghcr.io/${{ github.repository }}/api:latest
           docker push ghcr.io/${{ github.repository }}/worker:latest
+          docker push ghcr.io/${{ github.repository }}/frontend:latest
 
   deploy:
     needs: test_and_build

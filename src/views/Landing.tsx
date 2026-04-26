@@ -27,34 +27,49 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
 
       {/* Top Navigation */}
       <nav className="sticky top-0 w-full z-50 border-b border-blueprint-line bg-white/80 backdrop-blur-md">
-        <div className="max-w-[1440px] mx-auto flex justify-between items-center px-8 h-16">
-          <div className="flex items-center gap-12">
+        <div className="max-w-[1440px] mx-auto flex items-center px-4 md:px-8 h-16 w-full relative">
+          
+          {/* Logo (Left) */}
+          <div className="flex-shrink-0 z-10">
             <button 
               onClick={() => onViewChange('landing')}
-              className="font-serif italic text-3xl text-primary tracking-tight"
+              className="font-serif italic text-2xl md:text-3xl text-primary tracking-tight"
             >
               AUTOMATA
             </button>
-            <div className="hidden md:flex items-center gap-8">
-              <button onClick={() => onViewChange('landing')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors">Solutions</button>
-              <button onClick={() => onViewChange('workflows')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors">Use Cases</button>
-              <button onClick={() => onViewChange('docs')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors">Developers</button>
-              <button onClick={() => onViewChange('analytics')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors">Resources</button>
-              <button onClick={() => onViewChange('settings')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors">Pricing</button>
-            </div>
           </div>
-          <div className="flex items-center gap-4">
+
+          {/* Centered Navigation Buttons (Hidden on Mobile) */}
+          <div className="hidden lg:flex items-center gap-6 absolute left-1/2 -translate-x-1/2 z-0">
+            <button onClick={() => onViewChange('landing')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Solutions</button>
+            <button onClick={() => onViewChange('workflows')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Use Cases</button>
+            <button onClick={() => onViewChange('docs')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Developers</button>
+            <button onClick={() => onViewChange('analytics')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Resources</button>
+            <button onClick={() => onViewChange('settings')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Pricing</button>
+            
+            <div className="w-px h-4 bg-blueprint-line mx-2"></div>
+            
+            <button 
+              onClick={onViewDocs}
+              className="bg-blueprint-bg border border-blueprint-line px-4 py-1.5 rounded-full text-ui-label text-primary hover:bg-blueprint-line/20 transition-all whitespace-nowrap flex items-center gap-2 text-xs font-semibold"
+            >
+              Read the Docs
+            </button>
+          </div>
+
+          {/* Right Actions */}
+          <div className="flex items-center gap-2 md:gap-4 ml-auto z-10">
             <button 
               onClick={() => onViewChange('auth')}
-              className="text-ui-label text-on-background px-4 hover:text-primary transition-colors"
+              className="text-ui-label font-medium text-on-background px-2 md:px-4 hover:text-primary transition-colors"
             >
               Log In
             </button>
             <button 
-              onClick={onStart}
-              className="bg-primary text-white px-6 py-2.5 rounded-full text-ui-label hover:opacity-90 transition-all"
+              onClick={() => onViewChange('signup')}
+              className="bg-black text-white px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:opacity-90 transition-all font-medium whitespace-nowrap"
             >
-              Get Started
+              Sign Up
             </button>
           </div>
         </div>

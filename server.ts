@@ -181,7 +181,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[ORREN] Platform running on http://localhost:${PORT}`);
+    console.log(`[AUTOMATA] Platform running on http://localhost:${PORT}`);
   });
 }
 

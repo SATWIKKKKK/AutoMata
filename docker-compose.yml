@@ -60,10 +60,11 @@ services:
     networks:
       - orren-net
 
-  # Frontend (Next.js)
+  # Frontend (Vite/Express)
   frontend:
     build:
-      context: ./frontend
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
     env_file: .env

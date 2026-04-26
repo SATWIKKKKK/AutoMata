@@ -11,6 +11,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
