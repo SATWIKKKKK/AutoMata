@@ -29,12 +29,13 @@ jobs:
 
       - name: Build and Push Images
         run: |
-          docker build -t ghcr.io/${{ github.repository }}/api:latest -f Dockerfile.api .
-          docker build -t ghcr.io/${{ github.repository }}/worker:latest -f Dockerfile.worker .
-          docker build -t ghcr.io/${{ github.repository }}/frontend:latest -f Dockerfile .
-          docker push ghcr.io/${{ github.repository }}/api:latest
-          docker push ghcr.io/${{ github.repository }}/worker:latest
-          docker push ghcr.io/${{ github.repository }}/frontend:latest
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          docker build -t ghcr.io/$REPO_LOWER/api:latest -f Dockerfile.api .
+          docker build -t ghcr.io/$REPO_LOWER/worker:latest -f Dockerfile.worker .
+          docker build -t ghcr.io/$REPO_LOWER/frontend:latest -f Dockerfile .
+          docker push ghcr.io/$REPO_LOWER/api:latest
+          docker push ghcr.io/$REPO_LOWER/worker:latest
+          docker push ghcr.io/$REPO_LOWER/frontend:latest
 
   deploy:
     needs: test_and_build
