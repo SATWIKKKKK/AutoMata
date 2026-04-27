@@ -12,6 +12,7 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [status, setStatus] = useState<'idle' | 'success'>('idle');
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLDivElement>(null);
 
   const examples = [
@@ -34,14 +35,16 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
     if (!prompt.trim() || isGenerating) return;
     
     setIsGenerating(true);
+    setError(null);
     try {
       const dag = await generateWorkflowFromPrompt(prompt);
       setStatus('success');
       setTimeout(() => {
         onSuccess(dag);
       }, 1500);
-    } catch (error) {
-      console.error('Generation failed:', error);
+    } catch (err: any) {
+      console.error('Generation failed:', err);
+      setError(err?.message ?? 'Generation failed. Please try again.');
       setIsGenerating(false);
     }
   };
@@ -128,6 +131,16 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
               className="absolute inset-0 flex items-center justify-center bg-green-950/20 backdrop-blur-sm z-20"
             >
                <span className="text-green-400 font-mono text-sm">Workflow created — opening editor...</span>
+            </motion.div>
+          )}
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 flex items-center justify-center bg-red-950/30 backdrop-blur-sm z-20 p-6"
+            >
+              <span className="text-red-400 font-mono text-sm text-center">{error}</span>
             </motion.div>
           )}
         </AnimatePresence>

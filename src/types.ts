@@ -1,5 +1,5 @@
-export type WorkflowStatus = 'draft' | 'active' | 'paused' | 'archived';
-export type RunStatus = 'running' | 'passed' | 'failed' | 'waiting';
+export type WorkflowStatus = 'draft' | 'generating' | 'ready' | 'active' | 'paused' | 'archived' | 'failed';
+export type RunStatus = 'running' | 'passed' | 'failed' | 'waiting' | 'completed';
 
 export interface WorkflowMetadata {
   id: string;

@@ -9,9 +9,11 @@ import {
   Database, 
   Shield, 
   Cpu,
-  ArrowUpRight
+  ArrowUpRight,
+  ArrowLeft
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { View } from '../App';
 
 const sections = [
   {
@@ -39,13 +41,22 @@ const sections = [
   }
 ];
 
-export default function Docs() {
+export default function Docs({ onViewChange }: { onViewChange?: (view: View) => void }) {
   const [activeSection, setActiveSection] = useState('intro');
 
   return (
-    <div className="flex h-full bg-blueprint-bg relative">
+    <div className="flex flex-col lg:flex-row min-h-full bg-blueprint-bg relative">
       {/* Docs Sidebar */}
-      <aside className="w-72 border-r border-blueprint-line bg-surface-container-lowest/50 backdrop-blur-sm sticky top-0 h-full overflow-y-auto pt-12 pb-24 px-6 space-y-10">
+      <aside className="w-full lg:w-72 border-b lg:border-b-0 lg:border-r border-blueprint-line bg-surface-container-lowest/50 backdrop-blur-sm lg:sticky top-0 lg:h-full overflow-x-auto lg:overflow-y-auto pt-6 lg:pt-12 pb-6 lg:pb-24 px-4 sm:px-6 space-y-6 lg:space-y-10">
+        {/* Back to landing */}
+        {onViewChange && (
+          <button
+            onClick={() => onViewChange('landing')}
+            className="flex items-center gap-1.5 text-blueprint-muted hover:text-on-surface-variant text-xs mb-2 transition-colors"
+          >
+            <ArrowLeft size={13} /> Back to home
+          </button>
+        )}
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-blueprint-muted" />
           <input 
@@ -55,7 +66,7 @@ export default function Docs() {
           />
         </div>
 
-        <nav className="space-y-8">
+        <nav className="space-y-6 lg:space-y-8">
           {sections.map((section) => (
             <div key={section.title} className="space-y-4">
               <h3 className="text-ui-label text-blueprint-muted text-[10px] tracking-[0.2em]">{section.title}</h3>
@@ -84,7 +95,7 @@ export default function Docs() {
 
       {/* Content Area */}
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-[800px] mx-auto px-12 py-24 space-y-16">
+        <div className="max-w-[800px] mx-auto px-4 sm:px-6 lg:px-12 py-10 sm:py-16 lg:py-24 space-y-12 sm:space-y-16">
           <motion.div 
             key={activeSection}
             initial={{ opacity: 0, y: 20 }}
@@ -106,8 +117,8 @@ export default function Docs() {
                </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-12 pt-8">
-               <div className="space-y-6 p-8 border border-blueprint-line rounded-2xl bg-surface-container-low/20">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-12 pt-8">
+               <div className="space-y-6 p-6 sm:p-8 border border-blueprint-line rounded-2xl bg-surface-container-low/20">
                   <div className="w-12 h-12 rounded-full bg-blueprint-line/40 flex items-center justify-center">
                     <Terminal size={24} className="text-blueprint-accent" />
                   </div>
@@ -120,7 +131,7 @@ export default function Docs() {
                   </button>
                </div>
 
-               <div className="space-y-6 p-8 border border-blueprint-line rounded-2xl bg-surface-container-low/20">
+               <div className="space-y-6 p-6 sm:p-8 border border-blueprint-line rounded-2xl bg-surface-container-low/20">
                   <div className="w-12 h-12 rounded-full bg-blueprint-line/40 flex items-center justify-center">
                     <Zap size={24} className="text-blueprint-accent" />
                   </div>
@@ -145,7 +156,7 @@ export default function Docs() {
                       <div className="w-2 h-2 rounded-full bg-white/20" />
                     </div>
                  </div>
-                 <pre className="p-8 bg-surface-container-lowest font-mono text-[13px] leading-relaxed text-blueprint-accent overflow-x-auto">
+                 <pre className="p-4 sm:p-8 bg-surface-container-lowest font-mono text-[12px] sm:text-[13px] leading-relaxed text-blueprint-accent overflow-x-auto">
 {`name: autonomous_lead_enrichment
 type: graph
 nodes:

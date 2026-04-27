@@ -1,6 +1,16 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Lazy — only instantiated when a request is actually made so the app
+// loads fine even if GEMINI_API_KEY is not set.
+function getAI(): GoogleGenAI {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error(
+      "GEMINI_API_KEY is not configured. Add it to your .env file to use AI workflow generation."
+    );
+  }
+  return new GoogleGenAI({ apiKey: key });
+}
 
 export interface WorkflowNode {
   id: string;
@@ -25,6 +35,7 @@ export interface WorkflowDAG {
 }
 
 export async function generateWorkflowFromPrompt(prompt: string): Promise<WorkflowDAG> {
+  const ai = getAI();
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: prompt,

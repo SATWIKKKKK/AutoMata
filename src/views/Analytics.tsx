@@ -62,7 +62,7 @@ const MetricCard = ({ label, value, subtext, icon, trend }: MetricCardProps) => 
 
 export default function Analytics() {
   return (
-    <div className="p-12 md:p-16 max-w-[1440px] mx-auto w-full space-y-12">
+    <div className="px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-[1440px] mx-auto w-full space-y-8 sm:space-y-12">
       <div className="space-y-4">
         <h2 className="text-display-xl text-blueprint-accent">Performance Analytics</h2>
         <p className="text-body-lg text-blueprint-muted max-w-2xl leading-relaxed">
@@ -70,7 +70,7 @@ export default function Analytics() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
         <MetricCard 
           label="Success Rate" 
           value="99.98%" 
@@ -107,7 +107,7 @@ export default function Analytics() {
                 ))}
              </div>
           </div>
-          <div className="p-8 h-96">
+          <div className="p-4 sm:p-6 lg:p-8 h-72 sm:h-96">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={data}>
                 <defs>
@@ -149,9 +149,9 @@ export default function Analytics() {
         </div>
 
         <div className="lg:col-span-4 space-y-4">
-           <div className="flex items-center gap-2 mb-6">
+            <div className="flex items-center gap-2 mb-6">
               <AlertTriangle className="text-blueprint-accent" size={24} />
-              <h3 className="text-headline-md text-blueprint-accent text-2xl">Anomaly Detection</h3>
+              <h3 className="text-headline-md text-blueprint-accent text-xl sm:text-2xl">Anomaly Detection</h3>
            </div>
            
            <div className="space-y-4">

@@ -13,7 +13,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { WorkflowDAG, WorkflowNode, WorkflowEdge } from '../services/geminiService';
-import { CronTriggerNode, LLMCallNode, ToolCallNode, ConditionNode, HumanGateNode } from '../components/workflow/Nodes';
+import { CronTriggerNode, LLMCallNode, ToolCallNode, ConditionNode, HumanGateNode, EvaluatorNode } from '../components/workflow/Nodes';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, PlayCircle, Save, Plus } from 'lucide-react';
@@ -22,6 +22,7 @@ const nodeTypes = {
   cron_trigger: CronTriggerNode,
   llm_call: LLMCallNode,
   tool_call: ToolCallNode,
+  evaluator: EvaluatorNode,
   condition: ConditionNode,
   human_gate: HumanGateNode,
 };

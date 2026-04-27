@@ -1,17 +1,27 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  ArrowRight, 
-  Layers, 
-  Zap, 
-  Repeat, 
-  Shield, 
+import {
+  ArrowRight,
+  Layers,
+  Zap,
+  Repeat,
+  Shield,
   Terminal,
   ChevronRight,
   Search,
-  Maximize2
+  Maximize2,
+  LogOut,
+  Settings,
+  ChevronDown,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { clearSessionState, getStoredUser } from '../lib/session';
+
+function getInitials(name?: string, email?: string) {
+  if (name) return name.split(' ').map((p: string) => p[0]).join('').toUpperCase().slice(0, 2);
+  if (email) return email[0].toUpperCase();
+  return 'U';
+}
 
 interface LandingProps {
   onStart: () => void;
@@ -20,6 +30,28 @@ interface LandingProps {
 }
 
 export default function Landing({ onStart, onViewDocs, onViewChange }: LandingProps) {
+  const user = getStoredUser();
+
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const handleSignOut = () => {
+    clearSessionState();
+    setDropdownOpen(false);
+    onViewChange('landing');
+    window.location.reload();
+  };
+
   return (
     <div className="min-h-screen bg-background relative overflow-x-hidden">
       {/* Blueprint Grid Background */}
@@ -28,10 +60,10 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
       {/* Top Navigation */}
       <nav className="sticky top-0 w-full z-50 border-b border-blueprint-line bg-white/80 backdrop-blur-md">
         <div className="max-w-[1440px] mx-auto flex items-center px-4 md:px-8 h-16 w-full relative">
-          
-          {/* Logo (Left) */}
+
+          {/* Logo */}
           <div className="flex-shrink-0 z-10">
-            <button 
+            <button
               onClick={() => onViewChange('landing')}
               className="font-serif italic text-2xl md:text-3xl text-primary tracking-tight"
             >
@@ -39,38 +71,72 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
             </button>
           </div>
 
-          {/* Centered Navigation Buttons (Hidden on Mobile) */}
+          {/* Centre nav */}
           <div className="hidden lg:flex items-center gap-6 absolute left-1/2 -translate-x-1/2 z-0">
-            <button onClick={() => onViewChange('landing')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Solutions</button>
-            <button onClick={() => onViewChange('workflows')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Use Cases</button>
-            <button onClick={() => onViewChange('docs')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Developers</button>
-            <button onClick={() => onViewChange('analytics')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Resources</button>
-            <button onClick={() => onViewChange('settings')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Pricing</button>
-            
-            <div className="w-px h-4 bg-blueprint-line mx-2"></div>
-            
-            <button 
-              onClick={onViewDocs}
-              className="bg-blueprint-bg border border-blueprint-line px-4 py-1.5 rounded-full text-ui-label text-primary hover:bg-blueprint-line/20 transition-all whitespace-nowrap flex items-center gap-2 text-xs font-semibold"
-            >
-              Read the Docs
-            </button>
+            <button onClick={() => onViewChange('workflows')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Workflows</button>
+            <button onClick={() => onViewChange('docs')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Docs</button>
+            <button onClick={() => onViewChange('pricing')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Pricing</button>
           </div>
 
-          {/* Right Actions */}
+          {/* Right actions */}
           <div className="flex items-center gap-2 md:gap-4 ml-auto z-10">
-            <button 
-              onClick={() => onViewChange('auth')}
-              className="text-ui-label font-medium text-on-background px-2 md:px-4 hover:text-primary transition-colors"
-            >
-              Log In
-            </button>
-            <button 
-              onClick={() => onViewChange('signup')}
-              className="bg-black text-white px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:opacity-90 transition-all font-medium whitespace-nowrap"
-            >
-              Sign Up
-            </button>
+            {user?.loggedIn ? (
+              <>
+                <button
+                  onClick={() => onViewChange('builder')}
+                  className="bg-black text-white px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:opacity-90 transition-all font-medium whitespace-nowrap"
+                >
+                  Dashboard
+                </button>
+                {/* Profile dropdown */}
+                <div className="relative" ref={dropdownRef}>
+                  <button
+                    onClick={() => setDropdownOpen((o) => !o)}
+                    className="flex items-center gap-1.5 focus:outline-none"
+                  >
+                    <div className="w-8 h-8 rounded-full border border-gray-200 bg-black flex items-center justify-center text-white font-bold text-xs select-none">
+                      {getInitials(user?.name, user?.email)}
+                    </div>
+                    <ChevronDown size={14} className={cn('text-gray-500 transition-transform', dropdownOpen && 'rotate-180')} />
+                  </button>
+                  {dropdownOpen && (
+                    <div className="absolute right-0 top-10 min-w-[180px] bg-white border border-gray-200 rounded-xl shadow-xl py-2 z-50">
+                      {user?.name && <p className="px-4 py-1 text-sm font-semibold text-primary truncate">{user.name}</p>}
+                      {user?.email && <p className="px-4 pb-2 text-xs text-gray-400 truncate border-b border-gray-100">{user.email}</p>}
+                      <button
+                        onClick={() => { setDropdownOpen(false); onViewChange('settings'); }}
+                        className="flex items-center gap-2 w-full px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <Settings size={14} className="text-gray-400" />
+                        Settings
+                      </button>
+                      <button
+                        onClick={handleSignOut}
+                        className="flex items-center gap-2 w-full px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <LogOut size={14} className="text-gray-400" />
+                        Sign out
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => onViewChange('auth')}
+                  className="text-ui-label font-medium text-on-background px-2 md:px-4 hover:text-primary transition-colors"
+                >
+                  Log In
+                </button>
+                <button
+                  onClick={() => onViewChange('signup')}
+                  className="bg-black text-white px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:opacity-90 transition-all font-medium whitespace-nowrap"
+                >
+                  Sign Up
+                </button>
+              </>
+            )}
           </div>
         </div>
       </nav>
@@ -97,7 +163,7 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
             Build self-correcting AI loops that never drop state.
           </p>
 
-          <div className="flex justify-center gap-4 pt-4">
+          <div className="flex flex-col items-center gap-4 pt-4">
             <button 
               onClick={onStart}
               className="bg-primary text-white px-8 py-3.5 rounded-full text-ui-label flex items-center gap-2 hover:opacity-90 transition-all font-semibold uppercase tracking-widest"
@@ -221,9 +287,11 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
             <h1 className="font-serif italic text-3xl text-primary tracking-tight mb-2">AUTOMATA</h1>
             <p className="text-technical-mono text-blueprint-muted mt-1">© 2026 AUTOMATA PLATFORM. ENGINEERED FOR PRECISION.</p>
           </div>
-          <div className="flex gap-8 text-technical-mono text-blueprint-muted text-xs">
-            {['Privacy Policy', 'Terms of Service', 'Security', 'System Status'].map(item => (
-              <button key={item} className="hover:text-primary transition-colors uppercase font-semibold">{item}</button>
+          <div className="flex flex-wrap gap-4 md:gap-8 text-technical-mono text-blueprint-muted text-xs">
+            {(
+              [['Privacy Policy', 'privacy'], ['Terms of Service', 'terms'], ['Security', 'security']] as [string, any][]
+            ).map(([label, view]) => (
+              <button key={label} onClick={() => onViewChange(view)} className="hover:text-primary transition-colors uppercase font-semibold">{label}</button>
             ))}
           </div>
         </div>

@@ -26,27 +26,27 @@ const integrations = [
 
 export default function Registry() {
   return (
-    <div className="p-12 md:p-16 max-w-[1440px] mx-auto w-full space-y-16">
-      <div className="flex justify-between items-end border-b border-blueprint-line pb-8">
+    <div className="px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-[1440px] mx-auto w-full space-y-10 sm:space-y-16">
+      <div className="flex flex-col gap-4 lg:flex-row lg:justify-between lg:items-end border-b border-blueprint-line pb-6 sm:pb-8">
         <div className="space-y-2">
           <h2 className="text-headline-lg text-blueprint-accent">Tool Registry</h2>
           <p className="text-body-md text-blueprint-muted max-w-2xl">
             Connect and manage Model Context Protocol (MCP) servers. Enabled integrations are exposed to your active Operator Builder environments.
           </p>
         </div>
-        <div className="flex gap-4">
-          <button className="border border-blueprint-line text-blueprint-accent font-ui-label py-2 px-6 rounded-full flex items-center gap-2 hover:bg-blueprint-line/20 transition-all">
+        <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full lg:w-auto">
+          <button className="border border-blueprint-line text-blueprint-accent font-ui-label py-2 px-6 rounded-full flex items-center justify-center gap-2 hover:bg-blueprint-line/20 transition-all">
             <RefreshCw size={16} />
             Refresh
           </button>
-          <button className="bg-blueprint-accent text-white font-ui-label py-2 px-6 rounded-full flex items-center gap-2 hover:opacity-90 transition-all">
+          <button className="bg-blueprint-accent text-white font-ui-label py-2 px-6 rounded-full flex items-center justify-center gap-2 hover:opacity-90 transition-all">
             <Zap size={16} />
             Add Custom Server
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 sm:gap-8">
         {integrations.map((item, idx) => (
           <motion.div 
             key={item.id}
@@ -54,7 +54,7 @@ export default function Registry() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
             className={cn(
-              "bg-surface-container-lowest rounded-2xl p-8 border border-blueprint-line flex flex-col justify-between shadow-sm hover:shadow-xl transition-all duration-300 group",
+              "bg-surface-container-lowest rounded-2xl p-6 sm:p-8 border border-blueprint-line flex flex-col justify-between shadow-sm hover:shadow-xl transition-all duration-300 group",
               item.status === 'expired' && "opacity-60"
             )}
           >
@@ -108,7 +108,7 @@ export default function Registry() {
         ))}
       </div>
 
-      <div className="border border-dashed border-blueprint-line rounded-2xl p-16 flex flex-col items-center text-center bg-blueprint-bg/20">
+      <div className="border border-dashed border-blueprint-line rounded-2xl p-8 sm:p-16 flex flex-col items-center text-center bg-blueprint-bg/20">
          <div className="w-16 h-16 rounded-full bg-blueprint-line/40 flex items-center justify-center mb-6">
             <Plus size={32} className="text-blueprint-muted" />
          </div>

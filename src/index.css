@@ -83,3 +83,18 @@
 .react-flow__handle:hover {
   @apply !bg-blueprint-accent;
 }
+
+@keyframes workflowPulse {
+  0%, 100% {
+    border-color: rgba(63, 63, 70, 0.45);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.15);
+  }
+  50% {
+    border-color: rgba(59, 130, 246, 0.85);
+    box-shadow: 0 24px 60px rgba(59, 130, 246, 0.16);
+  }
+}
+
+.workflow-card-expand {
+  transition: all 400ms cubic-bezier(0.4, 0, 0.2, 1);
+}

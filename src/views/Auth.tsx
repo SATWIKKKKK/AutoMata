@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowRight, Github, Mail, ArrowUp } from "lucide-react";
+import { ArrowRight, Github, ArrowLeft } from "lucide-react";
 import { cn } from "../lib/utils";
+import { persistSessionUser } from '../lib/session';
 
 interface AuthProps {
   onAuthSuccess: () => void;
@@ -21,6 +22,13 @@ export default function Auth({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const userData = {
+      email,
+      name: mode === 'signup' ? fullname : (email.split('@')[0] || 'User'),
+      loggedIn: true,
+      joinedAt: new Date().toISOString(),
+    };
+    persistSessionUser(userData);
     onAuthSuccess();
   };
 
@@ -29,6 +37,14 @@ export default function Auth({
     <div className="bg-background text-on-surface antialiased min-h-screen relative flex items-center justify-center selection:bg-primary selection:text-on-primary font-body-md text-body-md overflow-x-hidden">
       {/* Structural Grid Overlay */}
       <div className="absolute inset-0 pointer-events-none opacity-60 bg-technical-grid"></div>
+
+      {/* Back button */}
+      <button
+        onClick={onBackToLanding}
+        className="absolute top-6 left-6 z-20 flex items-center gap-2 text-sm text-on-surface-variant hover:text-primary transition-colors"
+      >
+        <ArrowLeft size={16} /> Back to Home
+      </button>
 
       {/* Main Content Canvas (Floating Card) */}
       <motion.main
@@ -179,7 +195,14 @@ export default function Auth({
       {/* Structural Grid Overlay */}
       <div className="absolute inset-0 pointer-events-none opacity-60 bg-technical-grid"></div>
 
-      <main className="flex-grow flex items-center justify-center p-8 relative z-10 w-full overflow-y-auto pt-24 pb-48">
+      {/* Back button */}
+      <button
+        onClick={onBackToLanding}
+        className="absolute top-6 left-6 z-20 flex items-center gap-2 text-sm text-on-surface-variant hover:text-primary transition-colors"
+      >
+        <ArrowLeft size={16} /> Back to Home
+      </button>
+      <main className="flex items-center justify-center p-8 relative z-10 w-full overflow-y-auto pt-24 pb-48">
         {/* Floating Card Container */}
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
@@ -187,7 +210,7 @@ export default function Auth({
           className="w-full max-w-md bg-surface-container-lowest/90 backdrop-blur-md p-10 md:p-14 rounded-[16px] shadow-[0_20px_40px_-15px_rgba(0,0,0,0.04)] border border-surface-variant relative overflow-hidden"
         >
           {/* Structural Accent Line inside card */}
-          <div className="absolute top-0 left-0 w-full h-[1px] bg-outline-variant/30"></div>
+          <div className="absolute top-0 left-0 w-full h-px bg-outline-variant/30"></div>
 
           <div className="mb-12 text-center">
             <button
@@ -263,7 +286,14 @@ export default function Auth({
       {/* Structural Grid Overlay */}
       <div className="absolute inset-0 pointer-events-none opacity-60 bg-technical-grid"></div>
 
-      <main className="flex-grow flex items-center justify-center p-8 relative z-10 w-full overflow-y-auto pt-24 pb-48">
+      {/* Back button */}
+      <button
+        onClick={onBackToLanding}
+        className="absolute top-6 left-6 z-20 flex items-center gap-2 text-sm text-on-surface-variant hover:text-primary transition-colors"
+      >
+        <ArrowLeft size={16} /> Back to Home
+      </button>
+      <main className="flex items-center justify-center p-8 relative z-10 w-full overflow-y-auto pt-24 pb-48">
         {/* Floating Card Container */}
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
@@ -271,7 +301,7 @@ export default function Auth({
           className="w-full max-w-md bg-surface-container-lowest/90 backdrop-blur-md p-10 md:p-14 rounded-[16px] shadow-[0_20px_40px_-15px_rgba(0,0,0,0.04)] border border-surface-variant relative overflow-hidden"
         >
           {/* Structural Accent Line inside card */}
-          <div className="absolute top-0 left-0 w-full h-[1px] bg-outline-variant/30"></div>
+          <div className="absolute top-0 left-0 w-full h-px bg-outline-variant/30"></div>
 
           <div className="mb-12 text-center">
             <button
