@@ -51,11 +51,13 @@ export const DATABASE_SCHEMA_SQL = `
     total_tokens INTEGER DEFAULT 0,
     total_cost_inr NUMERIC(12, 4) DEFAULT 0,
     run_log JSONB,
+    anomalies JSONB,
     parent_run_id TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_id ON workflow_runs(workflow_id);
   CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
   CREATE INDEX IF NOT EXISTS idx_workflow_runs_started_at ON workflow_runs(started_at DESC);
+  ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS anomalies JSONB;
 
   CREATE TABLE IF NOT EXISTS node_executions (
     id TEXT PRIMARY KEY,
@@ -113,6 +115,20 @@ export const DATABASE_SCHEMA_SQL = `
     extracted_at TIMESTAMPTZ DEFAULT NOW()
   );
   CREATE INDEX IF NOT EXISTS idx_workflow_metrics_user_key ON workflow_metrics(user_id, metric_key);
+
+  CREATE TABLE IF NOT EXISTS workflow_memories (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT REFERENCES workflows(id) ON DELETE CASCADE,
+    run_id TEXT REFERENCES workflow_runs(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    content TEXT,
+    embedding_json TEXT,
+    metric_key TEXT,
+    metric_value NUMERIC(15, 4),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_workflow_memories_user_created ON workflow_memories(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_workflow_memories_workflow_metric ON workflow_memories(workflow_id, metric_key, created_at DESC);
 
   CREATE TABLE IF NOT EXISTS user_preferences (
     id TEXT PRIMARY KEY,

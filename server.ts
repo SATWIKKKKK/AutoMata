@@ -85,6 +85,20 @@ type WorkflowRow = {
   updated_at: DbTimestamp;
 };
 
+type ExtractedMetric = {
+  key: string;
+  value: number;
+  label?: string;
+};
+
+type MetricAnomaly = {
+  key: string;
+  current: number;
+  mean: number;
+  stddev: number;
+  direction: 'above' | 'below';
+};
+
 const activeWorkflowGenerations = new Set<string>();
 const activeWorkflowRuns = new Set<string>();
 const cancelledRuns = new Set<string>();
@@ -140,6 +154,40 @@ function parseDag(value: WorkflowRow['dag']): GeneratedWorkflowDag | null {
 
 function toJsonParam(value: unknown): string | null {
   return value == null ? null : JSON.stringify(value);
+}
+
+function extractJsonBlock(text: string): string {
+  const trimmed = String(text ?? '').trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+  return trimmed;
+}
+
+function parseJsonObject(text: string): Record<string, any> | null {
+  try {
+    const parsed = JSON.parse(extractJsonBlock(text));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseMetricsJson(text: string): ExtractedMetric[] {
+  try {
+    const parsed = JSON.parse(extractJsonBlock(text));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => {
+        const key = String(item?.key ?? '').trim();
+        const value = Number(item?.value);
+        const label = String(item?.label ?? '').trim();
+        if (!key || !Number.isFinite(value)) return null;
+        return { key, value, label };
+      })
+      .filter((item): item is ExtractedMetric => Boolean(item));
+  } catch {
+    return [];
+  }
 }
 
 async function ensureDatabaseReady() {
@@ -336,6 +384,104 @@ async function startServer() {
     }
     await ensureUserWorkspace(user);
     return user;
+  };
+
+  const getHaikuModel = () =>
+    process.env.HAIKU_MODEL?.trim()
+    || process.env.WORKFLOW_HAIKU_MODEL?.trim()
+    || process.env.TERMINAL_MODEL?.trim()
+    || process.env.ANTHROPIC_MODEL?.trim()
+    || 'claude-haiku-4-5';
+
+  const searchWorkflowMemories = async (userId: string, query: string, workflowId?: string | null) => {
+    const q = String(query ?? '').trim();
+    if (!q) return [];
+    const likePattern = `%${q.replace(/[%_]/g, '\\$&')}%`;
+    if (workflowId) {
+      return db.prepare(`
+        SELECT wm.content, wm.metric_key, wm.metric_value, wm.created_at, w.name AS workflow_name
+        FROM workflow_memories wm
+        INNER JOIN workflows w ON w.id = wm.workflow_id
+        WHERE wm.user_id = ? AND wm.workflow_id = ? AND wm.content ILIKE ? ESCAPE '\\'
+        ORDER BY wm.created_at DESC
+        LIMIT 10
+      `).all<{ content: string | null; metric_key: string | null; metric_value: number | string | null; created_at: DbTimestamp; workflow_name: string | null }>(
+        userId,
+        workflowId,
+        likePattern,
+      );
+    }
+    return db.prepare(`
+      SELECT wm.content, wm.metric_key, wm.metric_value, wm.created_at, w.name AS workflow_name
+      FROM workflow_memories wm
+      INNER JOIN workflows w ON w.id = wm.workflow_id
+      WHERE wm.user_id = ? AND wm.content ILIKE ? ESCAPE '\\'
+      ORDER BY wm.created_at DESC
+      LIMIT 10
+    `).all<{ content: string | null; metric_key: string | null; metric_value: number | string | null; created_at: DbTimestamp; workflow_name: string | null }>(
+      userId,
+      likePattern,
+    );
+  };
+
+  const extractMetricsFromText = async (text: string): Promise<ExtractedMetric[]> => {
+    const raw = String(text ?? '').trim();
+    if (!raw) return [];
+    try {
+      const response = await requestLlmCompletion({
+        model: getHaikuModel(),
+        maxTokens: 100,
+        temperature: 0,
+        system: "Extract all numeric business metrics from this text. Return ONLY JSON array: [{key: string, value: number, label: string}]. If none found return [].",
+        user: raw,
+      });
+      return parseMetricsJson(response.text);
+    } catch {
+      return [];
+    }
+  };
+
+  const detectAnomalies = async (
+    workflowId: string,
+    userId: string | null,
+    runId: string,
+    currentMetrics: ExtractedMetric[],
+  ): Promise<MetricAnomaly[]> => {
+    if (!userId) return [];
+    const anomalies: MetricAnomaly[] = [];
+    for (const metric of currentMetrics) {
+      const rows = await db.prepare(`
+        SELECT metric_value
+        FROM workflow_memories
+        WHERE workflow_id = ? AND user_id = ? AND metric_key = ? AND metric_value IS NOT NULL AND run_id <> ?
+        ORDER BY created_at DESC
+        LIMIT 10
+      `).all<{ metric_value: number | string | null }>(workflowId, userId, metric.key, runId);
+      const values = rows
+        .map((row) => Number(row.metric_value))
+        .filter((value) => Number.isFinite(value));
+      if (values.length < 3) continue;
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const variance = values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / values.length;
+      const stddev = Math.sqrt(variance);
+      if (stddev === 0) continue;
+      const upper = mean + (2 * stddev);
+      const lower = mean - (2 * stddev);
+      if (metric.value > upper) {
+        anomalies.push({ key: metric.key, current: metric.value, mean, stddev, direction: 'above' });
+      } else if (metric.value < lower) {
+        anomalies.push({ key: metric.key, current: metric.value, mean, stddev, direction: 'below' });
+      }
+    }
+    return anomalies;
+  };
+
+  const formatAnomalyAlerts = (anomalies: MetricAnomaly[]): string => {
+    if (!anomalies.length) return '';
+    return anomalies.map((anomaly) => {
+      const deltaPct = anomaly.mean === 0 ? 0 : Math.abs(((anomaly.current - anomaly.mean) / anomaly.mean) * 100);
+      return `\n\n⚠️ AutoMata Alert: ${anomaly.key} is ${deltaPct.toFixed(1)}% ${anomaly.direction} recent average (${anomaly.mean.toFixed(2)} avg, current: ${anomaly.current.toFixed(2)})`;
+    }).join('');
   };
 
   const upsertIntegration = async (
@@ -868,12 +1014,17 @@ async function startServer() {
 
     const nodeExecutionIds = new Map<string, string>();
     const startedAt = Date.now();
+    const runAnomalies: MetricAnomaly[] = [];
+    const seenAnomalyKeys = new Set<string>();
+    let hasEmailNode = false;
+    const pendingMemories: Array<{ content: string; metrics: ExtractedMetric[] }> = [];
 
     try {
       const workflow = await getWorkflowById(workflowId);
       if (!workflow) throw new Error('Workflow not found.');
       const dag = parseDag(workflow.dag) ?? { nodes: [], edges: [] };
       const workspaceId = workflow.workspace_id ?? `workspace:${workflow.user_id ?? 'anonymous'}`;
+      hasEmailNode = dag.nodes.some((node) => node.type === 'tool_call' && String(node.config?.tool_name ?? '').toLowerCase().includes('send_email'));
 
       const result = await executeWorkflow(dag, runId, {
         shouldStop: () => cancelledRuns.has(runId),
@@ -886,6 +1037,17 @@ async function startServer() {
             throw new Error(`Token refresh is not supported for provider: ${provider}`);
           }
           return refreshGoogleToken(workspaceId, normalizedProvider, refreshToken);
+        },
+        transformToolParams: async (node, params) => {
+          if (node.type !== 'tool_call') return params;
+          const toolName = String(node.config?.tool_name ?? '').toLowerCase();
+          if (!toolName.includes('send_email') || runAnomalies.length === 0) return params;
+          const existingBody = String(params.body ?? params.message ?? '');
+          const alerts = formatAnomalyAlerts(runAnomalies);
+          return {
+            ...params,
+            body: `${existingBody}${alerts}`,
+          };
         },
         onNodeUpdate: async (event: NodeExecutionEvent) => {
           const executionId = nodeExecutionIds.get(event.nodeId) ?? uuidv4();
@@ -954,6 +1116,28 @@ async function startServer() {
             WHERE id = ?
           `).run(Number(totals?.totaltokens ?? 0), Number(totals?.totalcostinr ?? 0), runId);
 
+          if (
+            event.status === 'passed'
+            && event.nodeType === 'llm_call'
+            && workflow.user_id
+          ) {
+            const llmText = typeof event.output === 'string'
+              ? event.output
+              : JSON.stringify(event.output ?? '');
+            if (llmText.trim()) {
+              const metrics = await extractMetricsFromText(llmText);
+              pendingMemories.push({ content: llmText, metrics });
+
+              const detected = await detectAnomalies(workflowId, workflow.user_id, runId, metrics);
+              for (const anomaly of detected) {
+                const dedupeKey = `${anomaly.key}:${anomaly.current}`;
+                if (seenAnomalyKeys.has(dedupeKey)) continue;
+                seenAnomalyKeys.add(dedupeKey);
+                runAnomalies.push(anomaly);
+              }
+            }
+          }
+
           emitRunEvent(runId, 'node_update', {
             nodeId: event.nodeId,
             nodeLabel: event.nodeLabel,
@@ -979,15 +1163,45 @@ async function startServer() {
 
       await db.prepare(`
         UPDATE workflow_runs
-        SET status = ?, ended_at = NOW(), total_tokens = ?, total_cost_inr = ?
+        SET status = ?, ended_at = NOW(), total_tokens = ?, total_cost_inr = ?, anomalies = ?::jsonb
         WHERE id = ?
-      `).run(finalStatus, result.totalTokens, result.totalCostInr, runId);
+      `).run(finalStatus, result.totalTokens, result.totalCostInr, JSON.stringify(runAnomalies), runId);
+
+      if (finalStatus === 'completed' && workflow.user_id) {
+        for (const memory of pendingMemories) {
+          await db.prepare(`
+            INSERT INTO workflow_memories (id, workflow_id, run_id, user_id, content, embedding_json, metric_key, metric_value, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+          `).run(uuidv4(), workflowId, runId, workflow.user_id, memory.content, '[]', null, null);
+
+          for (const metric of memory.metrics) {
+            await db.prepare(`
+              INSERT INTO workflow_memories (id, workflow_id, run_id, user_id, content, embedding_json, metric_key, metric_value, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            `).run(
+              uuidv4(),
+              workflowId,
+              runId,
+              workflow.user_id,
+              memory.content,
+              '[]',
+              metric.key,
+              metric.value,
+            );
+          }
+        }
+      }
+
+      if (runAnomalies.length > 0 && !hasEmailNode) {
+        console.warn(`[anomaly] workflow=${workflowId} run=${runId} anomalies=${JSON.stringify(runAnomalies)}`);
+      }
 
       emitRunEvent(runId, 'run_complete', {
         runId,
         status: finalStatus,
         totalTokens: result.totalTokens,
         totalCostInr: result.totalCostInr,
+        anomalies: runAnomalies,
         durationMs: Date.now() - startedAt,
         error: result.error ?? (cancelledRuns.has(runId) ? 'Run stopped by user.' : null),
       });
@@ -995,15 +1209,16 @@ async function startServer() {
       const message = error instanceof Error ? error.message : 'Run failed.';
       await db.prepare(`
         UPDATE workflow_runs
-        SET status = 'failed', ended_at = NOW()
+        SET status = 'failed', ended_at = NOW(), anomalies = ?::jsonb
         WHERE id = ?
-      `).run(runId);
+      `).run('[]', runId);
 
       emitRunEvent(runId, 'run_complete', {
         runId,
         status: 'failed',
         totalTokens: 0,
         totalCostInr: 0,
+        anomalies: [],
         durationMs: Date.now() - startedAt,
         error: message,
       });
@@ -1264,7 +1479,7 @@ async function startServer() {
       INNER JOIN workflows w ON w.id = wr.workflow_id
       WHERE wr.id = ? AND w.user_id = ?
     `).get(req.params.runId, user.userId) as
-      | { id: string; status: string; total_tokens: number; total_cost_inr: number; started_at: string; ended_at: string | null }
+      | { id: string; status: string; total_tokens: number; total_cost_inr: number; started_at: string; ended_at: string | null; anomalies?: unknown }
       | undefined;
 
     if (!run) {
@@ -1283,6 +1498,9 @@ async function startServer() {
         status: run.status,
         totalTokens: Number(run.total_tokens ?? 0),
         totalCostInr: Number(run.total_cost_inr ?? 0),
+        anomalies: Array.isArray(run.anomalies) ? run.anomalies : (() => {
+          try { return JSON.parse(String(run.anomalies ?? '[]')); } catch { return []; }
+        })(),
         durationMs: run.ended_at ? (new Date(String(run.ended_at)).getTime() - new Date(String(run.started_at)).getTime()) : 0,
       });
       return res.end();
@@ -1332,8 +1550,31 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  app.get('/api/memories/search', async (req, res) => {
+    const user = await requireSession(req, res);
+    if (!user) return;
+    const q = String(req.query.q ?? '').trim();
+    const workflowId = String(req.query.workflow_id ?? '').trim() || null;
+    if (!q) {
+      return res.json({ memories: [] });
+    }
+    const rows = await searchWorkflowMemories(user.userId, q, workflowId);
+    res.json({
+      memories: rows.map((row) => ({
+        content: row.content ?? '',
+        metric_key: row.metric_key ?? null,
+        metric_value: row.metric_value == null ? null : Number(row.metric_value),
+        workflow_name: row.workflow_name ?? null,
+        created_at: toIsoTimestamp(row.created_at),
+      })),
+    });
+  });
+
   // ── Terminal (streaming chat) ─────────────────────────────────────────
   app.post("/api/terminal", async (req, res) => {
+    const user = await requireSession(req, res);
+    if (!user) return;
+
     const { message, history } = req.body as {
       message?: string;
       history?: Array<{ role: "user" | "assistant"; content: string }>;
@@ -1356,15 +1597,145 @@ async function startServer() {
 
     try {
       const model = process.env.TERMINAL_MODEL?.trim() || process.env.ANTHROPIC_MODEL?.trim() || "claude-haiku-4-5";
+      const haikuModel = getHaikuModel();
       const historyTranscript = safeHistory
         .map((entry) => `${entry.role.toUpperCase()}: ${entry.content}`)
         .join('\n\n');
+
+      const classifierResponse = await requestLlmCompletion({
+        model: haikuModel,
+        maxTokens: 80,
+        temperature: 0,
+        system: "Classify this message. Return ONLY JSON:\n{ intent: 'workflow_edit'|'workflow_query'|'general', workflow_hint: string|null }\nworkflow_edit = user wants to change/pause/delete/update a workflow\nworkflow_query = user asking about past runs or workflow status\nworkflow_hint = name or description fragment of the target workflow",
+        user: message,
+      });
+      const classifier = parseJsonObject(classifierResponse.text) ?? { intent: 'general', workflow_hint: null };
+      const intent = String(classifier.intent ?? 'general');
+      const workflowHint = classifier.workflow_hint == null ? null : String(classifier.workflow_hint);
+
+      const allWorkflows = await db.prepare(`
+        SELECT id, name, description, dag, status, cron_schedule
+        FROM workflows
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+      `).all<{
+        id: string;
+        name: string;
+        description: string | null;
+        dag: unknown;
+        status: string;
+        cron_schedule: string | null;
+      }>(user.userId);
+
+      if (intent === 'workflow_edit') {
+        const editResponse = await requestLlmCompletion({
+          model: haikuModel,
+          maxTokens: 300,
+          temperature: 0,
+          system: "You are a workflow editor. Given the user's edit request and their workflows, produce ONLY a JSON edit action:\n{ workflow_id: string, action: 'update_node_prompt'|'pause'|'resume'|'update_schedule'|'update_tool_param', node_id: string|null, field: string|null, new_value: string|null }\nIf you cannot determine which workflow: return { action: 'unclear' }",
+          user: `Request: ${message}\n\nWorkflows: ${JSON.stringify(allWorkflows)}`,
+        });
+        const action = parseJsonObject(editResponse.text) ?? { action: 'unclear' };
+        const actionName = String(action.action ?? 'unclear');
+        const workflowId = String(action.workflow_id ?? '').trim();
+        let responseText = "Done — I've applied the requested workflow update. The change is live.";
+
+        if (!workflowId || actionName === 'unclear') {
+          responseText = "Done — I've reviewed your request, but the target workflow edit was unclear. Please specify workflow and change.";
+        } else {
+          const workflow = await db.prepare(`
+            SELECT id, name, description, dag, status, cron_schedule
+            FROM workflows
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+          `).get<WorkflowRow>(workflowId, user.userId);
+          if (!workflow) {
+            responseText = "Done — I've reviewed your request, but I couldn't find that workflow in your account.";
+          } else if (actionName === 'pause') {
+            await db.prepare(`UPDATE workflows SET status = 'paused', updated_at = NOW() WHERE id = ?`).run(workflowId);
+            responseText = "Done — I've paused the workflow. The change is live.";
+          } else if (actionName === 'resume') {
+            await db.prepare(`UPDATE workflows SET status = 'active', updated_at = NOW() WHERE id = ?`).run(workflowId);
+            responseText = "Done — I've resumed the workflow. The change is live.";
+          } else if (actionName === 'update_schedule') {
+            const schedule = String(action.new_value ?? '').trim();
+            await db.prepare(`UPDATE workflows SET cron_schedule = ?, updated_at = NOW() WHERE id = ?`).run(schedule || null, workflowId);
+            responseText = "Done — I've updated the schedule. The change is live.";
+          } else if (actionName === 'update_node_prompt' || actionName === 'update_tool_param') {
+            const dag = parseDag(workflow.dag) ?? { nodes: [], edges: [] };
+            const nodeId = String(action.node_id ?? '').trim();
+            const field = String(action.field ?? '').trim();
+            const newValue = action.new_value == null ? null : String(action.new_value);
+            const node = dag.nodes.find((n) => n.id === nodeId);
+            if (!node) {
+              responseText = "Done — I couldn't find the target node in that workflow.";
+            } else {
+              if (actionName === 'update_node_prompt') {
+                node.config = {
+                  ...(node.config ?? {}),
+                  system_prompt: newValue ?? '',
+                };
+                responseText = "Done — I've updated the node prompt. The change is live.";
+              } else {
+                const params = { ...(node.config?.tool_params_template ?? {}) };
+                if (field) {
+                  params[field] = newValue;
+                }
+                node.config = {
+                  ...(node.config ?? {}),
+                  tool_params_template: params,
+                };
+                responseText = "Done — I've updated the tool parameters. The change is live.";
+              }
+              await db.prepare(`UPDATE workflows SET dag = ?::jsonb, updated_at = NOW() WHERE id = ?`)
+                .run(JSON.stringify(dag), workflowId);
+            }
+          } else {
+            responseText = "Done — I've reviewed your request, but that edit action is not supported yet.";
+          }
+        }
+
+        const data = JSON.stringify({ delta: responseText });
+        res.write(`data: ${data}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+
+      let runContextSnippet = '';
+      if (intent === 'workflow_query') {
+        const hint = (workflowHint ?? message).trim();
+        const workflows = hint
+          ? allWorkflows.filter((w) =>
+            w.name.toLowerCase().includes(hint.toLowerCase())
+            || String(w.description ?? '').toLowerCase().includes(hint.toLowerCase()))
+          : [];
+        const targetWorkflow = workflows[0] ?? allWorkflows[0];
+        if (targetWorkflow) {
+          const recentRuns = await db.prepare(`
+            SELECT id, status, started_at, ended_at, total_tokens, total_cost_inr, anomalies
+            FROM workflow_runs
+            WHERE workflow_id = ?
+            ORDER BY started_at DESC
+            LIMIT 10
+          `).all(targetWorkflow.id);
+          runContextSnippet = `RECENT RUN DATA FOR WORKFLOW "${targetWorkflow.name}":\n${JSON.stringify(recentRuns)}`;
+        }
+      }
+
+      const memories = await searchWorkflowMemories(user.userId, message);
+      const memorySnippet = memories.length > 0
+        ? `RELEVANT HISTORY FROM USER'S PAST WORKFLOW RUNS:\n${memories.map((m) => {
+          const metricPart = m.metric_key ? ` | ${m.metric_key}=${Number(m.metric_value ?? 0)}` : '';
+          return `- [${toIsoTimestamp(m.created_at)}] ${m.workflow_name ?? 'Workflow'}${metricPart}: ${String(m.content ?? '').slice(0, 400)}`;
+        }).join('\n')}\nUse this context to answer questions about past runs.`
+        : '';
 
       const response = await requestLlmCompletion({
         model,
         maxTokens: 1024,
         temperature: 0.2,
-        system: `You are Automata AI, an intelligent assistant for building and debugging autonomous workflows. Help users design workflow logic, write system prompts, debug failures, understand AI agent patterns, and translate plain English descriptions into structured workflow DAGs. Be concise and practical.`,
+        system: `You are Automata AI, an intelligent assistant for building and debugging autonomous workflows. Help users design workflow logic, write system prompts, debug failures, understand AI agent patterns, and translate plain English descriptions into structured workflow DAGs. Be concise and practical.${memorySnippet ? `\n\n${memorySnippet}` : ''}${runContextSnippet ? `\n\n${runContextSnippet}` : ''}`,
         user: historyTranscript
           ? `${historyTranscript}\n\nUSER: ${message}`
           : message,

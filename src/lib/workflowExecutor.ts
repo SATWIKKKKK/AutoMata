@@ -68,6 +68,7 @@ export interface ExecuteWorkflowOptions {
     accessToken: string;
     expiresAt: string | null;
   }>;
+  transformToolParams?: (node: DAGNode, params: Record<string, any>, context: Record<string, any>) => Promise<Record<string, any>> | Record<string, any>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -210,10 +211,13 @@ async function executeNode(
         };
       }
 
-      const params = renderTemplate(
+      let params = renderTemplate(
         node.config.tool_params_template ?? {},
         context,
       ) as Record<string, any>;
+      if (options.transformToolParams) {
+        params = await options.transformToolParams(node, params, context);
+      }
 
       const integration = await options.resolveIntegration?.(tool.provider);
       if (!integration) {
