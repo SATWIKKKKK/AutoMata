@@ -405,10 +405,6 @@ function BillingTab() {
           <div className="absolute -top-3 left-6 bg-primary text-on-primary px-4 py-1 rounded-full font-technical-mono text-technical-mono uppercase text-[10px]">Most Popular</div>
           <h4 className="font-headline-md text-headline-md text-primary mt-2 mb-1">Professional</h4>
           <p className="font-body-md text-body-md text-blueprint-muted mb-4">Unlimited workflows, 50K runs/month, Claude + Gemini, priority support.</p>
-          <div className="mb-6">
-            <span className="font-display-xl text-display-xl text-primary">₹999</span>
-            <span className="font-body-md text-body-md text-blueprint-muted">/month</span>
-          </div>
           <button onClick={() => setShowUpgradeModal(true)} className="w-full bg-primary text-on-primary py-3 rounded-full font-ui-label text-ui-label hover:bg-inverse-surface transition-colors">
             Upgrade to Pro
           </button>

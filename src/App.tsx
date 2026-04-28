@@ -11,19 +11,22 @@ import Editor from './views/Editor';
 import Registry from './views/Registry';
 import Analytics from './views/Analytics';
 import Workflows from './views/Workflows';
+import Templates from './views/Templates';
+import Pulse from './views/Pulse';
 import Docs from './views/Docs';
 import Settings from './views/Settings';
 import Landing from './views/Landing';
 import Auth from './views/Auth';
 import Pricing from './views/Pricing';
 import WorkflowDetail from './views/WorkflowDetail';
+import SharedWorkflow from './views/SharedWorkflow';
 import { Privacy, Terms, SecurityPage as Security } from './views/Legal';
 import { WorkflowDAG } from './services/geminiService';
 import { getStoredUser, setSessionCookie } from './lib/session';
 
 export type View =
   | 'landing' | 'dashboard' | 'builder' | 'terminal' | 'editor' | 'registry' | 'analytics'
-  | 'workflows' | 'docs' | 'settings' | 'auth' | 'signup'
+  | 'workflows' | 'templates' | 'pulse' | 'docs' | 'settings' | 'auth' | 'signup'
   | 'pricing' | 'privacy' | 'terms' | 'security';
 
 function getUser() {
@@ -35,7 +38,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 const PUBLIC_PATHS = ['/', '/login', '/signin', '/signup', '/pricing', '/privacy', '/terms', '/security', '/legal/privacy', '/legal/terms', '/legal/security', '/docs'];
-const APP_PATHS = ['/builder', '/terminal', '/dashboard', '/editor', '/workflows', '/registry', '/analytics', '/settings'];
+const APP_PATHS = ['/builder', '/terminal', '/dashboard', '/editor', '/workflows', '/templates', '/pulse', '/registry', '/analytics', '/settings'];
 
 function SettingsRoute({ onViewChange }: { onViewChange: (view: View) => void }) {
   const params = useParams<{ tab?: string }>();
@@ -54,16 +57,19 @@ function AppShell() {
   });
 
   const isWorkflowDetailPath = Boolean(matchPath('/workflows/:id', location.pathname));
+  const isSharedWorkflowPath = Boolean(matchPath('/w/:token', location.pathname));
   const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
   const isPublicPath = PUBLIC_PATHS.includes(location.pathname);
   const isAppPath = APP_PATHS.includes(location.pathname) || isSettingsPath;
-  const showAppChrome = isAppPath && !isWorkflowDetailPath;
+  const showAppChrome = (isAppPath || isWorkflowDetailPath) && !isSharedWorkflowPath;
 
   const pathToView: Record<string, View> = {
     '/': 'landing', '/login': 'auth', '/signin': 'auth', '/signup': 'signup',
     '/dashboard': 'dashboard', '/builder': 'builder', '/terminal': 'terminal',
     '/editor': 'editor', '/registry': 'registry',
     '/analytics': 'analytics', '/workflows': 'workflows', '/docs': 'docs',
+    '/templates': 'templates',
+    '/pulse': 'pulse',
     '/settings': 'settings', '/pricing': 'pricing', '/privacy': 'privacy',
     '/terms': 'terms', '/security': 'security', '/legal/privacy': 'privacy',
     '/legal/terms': 'terms', '/legal/security': 'security',
@@ -192,9 +198,12 @@ function AppShell() {
             <Route path="/workflows" element={
               <ProtectedRoute><Workflows onViewWorkflow={(dag) => { handleWorkflowSave(dag); navigate('/editor'); }} /></ProtectedRoute>
             } />
+            <Route path="/templates" element={<ProtectedRoute><Templates /></ProtectedRoute>} />
             <Route path="/workflows/:id" element={<ProtectedRoute><WorkflowDetail /></ProtectedRoute>} />
+            <Route path="/w/:token" element={<SharedWorkflow />} />
             <Route path="/registry" element={<ProtectedRoute><Registry /></ProtectedRoute>} />
             <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+            <Route path="/pulse" element={<ProtectedRoute><Pulse /></ProtectedRoute>} />
             <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/:tab" element={<ProtectedRoute><SettingsRoute onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />

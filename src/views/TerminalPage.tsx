@@ -14,9 +14,6 @@ interface Message {
   content: string;
   streaming?: boolean;
   timestamp: number;
-  cost?: string;
-  tokens?: number;
-  duration?: number;
 }
 
 interface TerminalPageProps {
@@ -25,8 +22,6 @@ interface TerminalPageProps {
 
 const STORAGE_KEY = 'automata-terminal-session';
 const MAX_CHARS = 2000;
-const SYSTEM_PROMPT = `You are Automata AI, an intelligent assistant for building and debugging autonomous workflows. Help users design workflow logic, write system prompts, debug failures, understand AI agent patterns, and translate plain English descriptions into structured workflow DAGs. Be concise, technical when needed, and always practical.`;
-
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
@@ -41,7 +36,7 @@ function MessageBubble({ msg }: { msg: Message }) {
   if (msg.role === 'system') {
     return (
       <div className="flex justify-center my-3">
-        <span className="text-xs text-white/30 italic font-mono">{msg.content}</span>
+        <span className="text-xs text-blueprint-muted italic font-mono">{msg.content}</span>
       </div>
     );
   }
@@ -56,35 +51,29 @@ function MessageBubble({ msg }: { msg: Message }) {
       {/* Avatar */}
       <div className={cn(
         'w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5',
-        isUser ? 'bg-white/10' : 'bg-[#3b82f6]/20',
+        isUser ? 'bg-surface-container' : 'bg-blue-100',
       )}>
         {isUser
-          ? <User size={13} className="text-white/60" />
-          : <Cpu size={13} className="text-[#3b82f6]" />}
+          ? <User size={13} className="text-blueprint-muted" />
+          : <Cpu size={13} className="text-blue-600" />}
       </div>
 
       <div className={cn('flex flex-col gap-1 min-w-0', isUser ? 'items-end' : 'items-start')}>
         <div className="flex items-center gap-2 mb-0.5">
-          <span className="font-technical-mono text-technical-mono text-white/30">{isUser ? 'You' : 'Automata AI'}</span>
-          <span className="font-technical-mono text-technical-mono text-white/20">{formatTime(msg.timestamp)}</span>
+          <span className="font-technical-mono text-technical-mono text-blueprint-muted">{isUser ? 'You' : 'Automata AI'}</span>
+          <span className="font-technical-mono text-technical-mono text-blueprint-muted/60">{formatTime(msg.timestamp)}</span>
         </div>
         <div className={cn(
           'rounded-2xl px-4 py-3 font-body-md text-body-md leading-relaxed max-w-[80%] md:max-w-[70%] whitespace-pre-wrap wrap-break-word',
           isUser
-            ? 'bg-white/10 text-white/90'
-            : 'bg-[#1e2030] text-[#c9d1d9] border border-white/5',
+            ? 'bg-surface-container text-on-surface'
+            : 'bg-surface-container-lowest text-on-surface border border-outline-variant',
         )}>
           {msg.content}
           {msg.streaming && (
-            <span className="inline-block w-1.5 h-3.5 bg-[#3b82f6] ml-1 animate-pulse rounded-sm" />
+            <span className="inline-block w-1.5 h-3.5 bg-blue-500 ml-1 animate-pulse rounded-sm" />
           )}
         </div>
-        {/* Cost/token tag for assistant */}
-        {!isUser && !msg.streaming && msg.cost && (
-          <span className="font-technical-mono text-technical-mono text-xs text-white/20 font-mono px-1">
-            {msg.cost} · {msg.tokens?.toLocaleString()} tokens · {msg.duration?.toFixed(1)}s
-          </span>
-        )}
       </div>
     </motion.div>
   );
@@ -160,8 +149,6 @@ export default function TerminalPage({ onViewChange }: TerminalPageProps) {
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-    const startTime = Date.now();
-
     try {
       const res = await fetch('/api/terminal', {
         method: 'POST',
@@ -204,14 +191,10 @@ export default function TerminalPage({ onViewChange }: TerminalPageProps) {
         );
       }
 
-      const elapsed = (Date.now() - startTime) / 1000;
-      const approxTokens = Math.round((text.length + accumulated.length) / 4);
-      const cost = `₹${(approxTokens * 0.000015).toFixed(4)}`;
-
       setMessages(prev =>
         prev.map(m =>
           m.id === assistantId
-            ? { ...m, streaming: false, tokens: approxTokens, cost, duration: elapsed }
+            ? { ...m, streaming: false }
             : m,
         ),
       );
@@ -258,19 +241,19 @@ export default function TerminalPage({ onViewChange }: TerminalPageProps) {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#0d0f12]" style={{ minHeight: 0 }}>
+    <div className="flex flex-col h-full bg-blueprint-bg" style={{ minHeight: 0 }}>
 
       {/* ── Top Bar ─────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-4 px-4 sm:px-6 py-4 border-b border-white/5 shrink-0 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col gap-4 px-4 sm:px-6 py-4 border-b border-blueprint-line shrink-0 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
-          <span className="font-technical-mono text-technical-mono text-white/30 uppercase tracking-widest block mb-0.5">AI Terminal</span>
-          <h1 className="font-headline-md text-headline-md text-white">Terminal</h1>
-          <p className="font-body-md text-body-md text-white/40 mt-0.5">Direct AI interaction — test prompts before adding to workflows</p>
+          <span className="font-technical-mono text-technical-mono text-blueprint-muted uppercase tracking-widest block mb-0.5">AI Terminal</span>
+          <h1 className="font-headline-md text-headline-md text-primary not-italic">Terminal</h1>
+          <p className="font-body-md text-body-md text-on-surface-variant mt-0.5">Direct AI interaction — test prompts before adding to workflows</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={clearSession}
-            className="flex items-center gap-1.5 font-ui-label text-ui-label text-white/40 hover:text-white/70 transition-colors px-3 py-1.5 rounded-lg hover:bg-white/5"
+            className="flex items-center gap-1.5 font-ui-label text-ui-label text-blueprint-muted hover:text-primary transition-colors px-3 py-1.5 rounded-lg hover:bg-surface-container"
           >
             <Trash2 size={13} /> Clear
           </button>
@@ -282,8 +265,8 @@ export default function TerminalPage({ onViewChange }: TerminalPageProps) {
               hasResponse
                 ? saveSuccess
                   ? 'bg-green-500 text-white'
-                  : 'bg-white text-black hover:bg-gray-100'
-                : 'bg-white/10 text-white/30 cursor-not-allowed',
+                  : 'bg-primary text-on-primary hover:bg-inverse-surface'
+                : 'bg-surface-container text-blueprint-muted cursor-not-allowed',
             )}
           >
             <Save size={13} />
@@ -304,7 +287,7 @@ export default function TerminalPage({ onViewChange }: TerminalPageProps) {
 
       {/* ── Error bar ───────────────────────────────────────────────────── */}
       {error && (
-        <div className="flex items-center gap-2 px-6 py-3 bg-red-500/10 border-t border-red-500/20 text-red-400 text-xs font-mono shrink-0">
+        <div className="flex items-center gap-2 px-6 py-3 bg-red-50 border-t border-red-200 text-red-600 text-xs font-mono shrink-0">
           <AlertCircle size={13} />
           {error}
           <button onClick={() => setError(null)} className="ml-auto hover:text-red-300">
@@ -314,8 +297,8 @@ export default function TerminalPage({ onViewChange }: TerminalPageProps) {
       )}
 
       {/* ── Input Area ──────────────────────────────────────────────────── */}
-      <div className="shrink-0 border-t border-white/5 bg-[#111318] px-4 sm:px-6 py-4">
-        <div className="flex items-end gap-3 bg-[#1a1d26] border border-white/8 rounded-2xl px-3 sm:px-4 py-3 focus-within:border-white/20 transition-colors">
+      <div className="shrink-0 border-t border-blueprint-line bg-surface-container-lowest px-4 sm:px-6 py-4">
+        <div className="flex items-end gap-3 bg-surface-container border border-outline-variant rounded-2xl px-3 sm:px-4 py-3 focus-within:border-primary transition-colors">
           <textarea
             ref={textareaRef}
             value={input}
@@ -326,16 +309,16 @@ export default function TerminalPage({ onViewChange }: TerminalPageProps) {
             placeholder="Ask anything or describe a workflow…"
             disabled={isSending}
             rows={1}
-            className="flex-1 bg-transparent text-white/80 text-sm placeholder:text-white/20 resize-none border-none focus:ring-0 outline-none leading-6 min-h-6"
+            className="flex-1 bg-transparent text-on-surface text-sm placeholder:text-blueprint-muted resize-none border-none focus:ring-0 outline-none leading-6 min-h-6"
           />
           <div className="flex items-center gap-2 shrink-0 pb-0.5">
-            <span className={cn('text-[10px] font-mono', input.length > MAX_CHARS * 0.9 ? 'text-yellow-400' : 'text-white/20')}>
+            <span className={cn('text-[10px] font-mono', input.length > MAX_CHARS * 0.9 ? 'text-yellow-700' : 'text-blueprint-muted')}>
               {input.length}/{MAX_CHARS}
             </span>
             <button
               onClick={handleSend}
               disabled={isSending || !input.trim()}
-              className="w-7 h-7 flex items-center justify-center bg-[#3b82f6] hover:bg-[#2563eb] rounded-full transition-colors disabled:opacity-30"
+              className="w-7 h-7 flex items-center justify-center bg-primary hover:bg-inverse-surface rounded-full transition-colors disabled:opacity-30"
             >
               {isSending
                 ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -343,7 +326,7 @@ export default function TerminalPage({ onViewChange }: TerminalPageProps) {
             </button>
           </div>
         </div>
-        <p className="font-technical-mono text-technical-mono text-white/15 mt-2 text-center">
+        <p className="font-technical-mono text-technical-mono text-blueprint-muted mt-2 text-center">
           Enter to send · Shift+Enter for new line · session auto-saved
         </p>
       </div>

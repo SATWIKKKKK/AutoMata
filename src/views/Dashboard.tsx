@@ -78,22 +78,22 @@ export default function Dashboard({ onWorkflowCreated, onViewChange }: Dashboard
         </div>
 
         {/* Terminal Input */}
-        <div className="w-full max-w-3xl mx-auto bg-[#1c1b1b] rounded-xl p-2 shadow-[0_24px_60px_rgba(0,0,0,0.1)] mb-10 hover:-translate-y-1 transition-transform duration-300">
-          <div className="bg-[#1a1c1a] rounded-lg p-5 sm:p-6 flex items-center gap-4 border border-white/5">
-            <Terminal size={24} className="text-[#858383] shrink-0" />
+        <div className="w-full max-w-3xl mx-auto bg-surface-container-lowest rounded-xl p-2 shadow-[0_8px_30px_rgba(0,0,0,0.03)] mb-10 hover:-translate-y-1 transition-transform duration-300 border border-outline-variant">
+          <div className="bg-surface-container-lowest rounded-lg p-5 sm:p-6 flex items-center gap-4 border border-outline-variant">
+            <Terminal size={24} className="text-blueprint-muted shrink-0" />
             <div className="flex-1 relative">
               <input
                 type="text"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleGenerate()}
-                className="w-full bg-transparent border-none focus:ring-0 text-[#858383] font-mono text-sm placeholder:text-transparent outline-none"
+                className="w-full bg-transparent border-none focus:ring-0 text-on-surface font-mono text-sm placeholder:text-transparent outline-none"
                 placeholder="Automate my client onboarding flow..."
               />
               {prompt === '' && (
                 <>
                   <span className="absolute left-0 inline-block w-2 h-4 bg-[#3B82F6] ml-1 animate-pulse top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <span className="absolute left-0 text-[#858383] font-mono pointer-events-none opacity-40 text-sm truncate pr-8">
+                  <span className="absolute left-0 text-blueprint-muted font-mono pointer-events-none opacity-60 text-sm truncate pr-8">
                     Automate my client onboarding flow and send progress reports weekly.
                   </span>
                 </>
@@ -102,7 +102,7 @@ export default function Dashboard({ onWorkflowCreated, onViewChange }: Dashboard
             <button
               onClick={handleGenerate}
               disabled={isGenerating || !prompt.trim()}
-              className="bg-white text-primary p-2 rounded-lg hover:bg-surface-container-low transition-colors disabled:opacity-40 shrink-0"
+              className="bg-primary text-on-primary p-2 rounded-lg hover:bg-inverse-surface transition-colors disabled:opacity-40 shrink-0"
             >
               <Send size={20} className={cn(isGenerating && 'animate-spin')} />
             </button>

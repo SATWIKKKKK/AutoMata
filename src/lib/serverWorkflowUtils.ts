@@ -120,6 +120,11 @@ export function normalizeGeneratedWorkflowDag(raw: any): GeneratedWorkflowDag {
   const sourceNodes = Array.isArray(raw?.nodes) ? raw.nodes : [];
   const sourceEdges = Array.isArray(raw?.edges) ? raw.edges : [];
 
+  const toFiniteNumber = (value: unknown, fallback: number): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
   const nodes: GeneratedWorkflowNode[] = sourceNodes.map((node: any, index: number) => {
     const type = normalizeNodeType(node?.type);
     const baseX = type === 'condition' ? 120 : 0;
@@ -137,8 +142,8 @@ export function normalizeGeneratedWorkflowDag(raw: any): GeneratedWorkflowDag {
       label: String(node?.label ?? defaultLabel(type, index)),
       config,
       position: {
-        x: Number(node?.position?.x ?? baseX),
-        y: Number(node?.position?.y ?? index * 180),
+        x: toFiniteNumber(node?.position?.x, baseX),
+        y: toFiniteNumber(node?.position?.y, index * 180),
       },
     };
   });
@@ -345,7 +350,13 @@ export function buildFallbackWorkflowDag(
     return null;
   };
 
+  const detectPrimaryEmail = (rawPrompt: string): string | null => {
+    const match = String(rawPrompt ?? '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    return match?.[0] ? match[0].trim() : null;
+  };
+
   const slackChannel = detectSlackChannel(prompt) || process.env.SLACK_DEFAULT_CHANNEL || '#general';
+  const recipientEmail = detectPrimaryEmail(prompt) || 'team@company.com';
 
   const fallbackSummary = buildFallbackSummary(prompt);
   const workflowName = String(preferredName ?? fallbackSummary.name).trim() || 'Generated Workflow';
@@ -433,7 +444,7 @@ export function buildFallbackWorkflowDag(
           mcp_server: 'gmail',
           tool_name: 'send_email',
           tool_params_template: {
-            to: 'team@company.com',
+            to: recipientEmail,
             subject: `${workflowName} Update`,
             body: '{{ llm_1.output }}',
           },

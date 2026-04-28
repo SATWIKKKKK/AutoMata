@@ -70,7 +70,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
               <>
                 <button
                   onClick={() => onViewChange('builder')}
-                  className="bg-black text-white px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:opacity-90 transition-all font-medium whitespace-nowrap"
+                  className="bg-primary text-on-primary px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:bg-inverse-surface transition-all font-medium whitespace-nowrap"
                 >
                   Dashboard
                 </button>
@@ -79,7 +79,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
                     onClick={() => setDropdownOpen((o) => !o)}
                     className="flex items-center gap-1.5 focus:outline-none"
                   >
-                    <div className="w-8 h-8 rounded-full border border-gray-200 bg-black flex items-center justify-center text-white font-bold text-xs">
+                    <div className="w-8 h-8 rounded-full border border-gray-200 bg-primary flex items-center justify-center text-on-primary font-bold text-xs">
                       {getInitials(user?.name, user?.email)}
                     </div>
                     <ChevronDown size={14} className={cn('text-gray-500 transition-transform', dropdownOpen && 'rotate-180')} />
@@ -110,7 +110,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
                 </button>
                 <button
                   onClick={() => onViewChange('signup')}
-                  className="bg-black text-white px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:opacity-90 transition-all font-medium whitespace-nowrap"
+                  className="bg-primary text-on-primary px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:bg-inverse-surface transition-all font-medium whitespace-nowrap"
                 >
                   Sign Up
                 </button>

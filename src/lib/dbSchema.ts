@@ -39,6 +39,10 @@ export const DATABASE_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_workflows_user_id ON workflows(user_id);
   CREATE INDEX IF NOT EXISTS idx_workflows_workspace_id ON workflows(workspace_id);
   CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status);
+  ALTER TABLE workflows ADD COLUMN IF NOT EXISTS share_token TEXT UNIQUE;
+  ALTER TABLE workflows ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE;
+  ALTER TABLE workflows ADD COLUMN IF NOT EXISTS fork_count INTEGER DEFAULT 0;
+  ALTER TABLE workflows ADD COLUMN IF NOT EXISTS forked_from TEXT;
 
   CREATE TABLE IF NOT EXISTS workflow_runs (
     id TEXT PRIMARY KEY,
@@ -129,6 +133,8 @@ export const DATABASE_SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_workflow_memories_user_created ON workflow_memories(user_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_workflow_memories_workflow_metric ON workflow_memories(workflow_id, metric_key, created_at DESC);
+  ALTER TABLE workflow_memories ADD COLUMN IF NOT EXISTS metric_key TEXT;
+  ALTER TABLE workflow_memories ADD COLUMN IF NOT EXISTS metric_value NUMERIC(15, 4);
 
   CREATE TABLE IF NOT EXISTS user_preferences (
     id TEXT PRIMARY KEY,
@@ -138,4 +144,18 @@ export const DATABASE_SCHEMA_SQL = `
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   );
+
+  CREATE TABLE IF NOT EXISTS templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    category TEXT,
+    dag JSONB,
+    prompt_text TEXT,
+    estimated_cost_inr NUMERIC(12, 4) DEFAULT 0,
+    use_count INTEGER DEFAULT 847,
+    is_featured BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_templates_use_count ON templates(use_count DESC);
 `;

@@ -22,16 +22,15 @@ import {
   ArrowUpRight
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { formatINR } from '../lib/utils';
 
 const data = [
-  { name: 'Mon', runs: 400, cost: 120, latency: 45 },
-  { name: 'Tue', runs: 300, cost: 90, latency: 38 },
-  { name: 'Wed', runs: 600, cost: 180, latency: 62 },
-  { name: 'Thu', runs: 800, cost: 240, latency: 55 },
-  { name: 'Fri', runs: 700, cost: 210, latency: 40 },
-  { name: 'Sat', runs: 900, cost: 270, latency: 42 },
-  { name: 'Sun', runs: 1100, cost: 330, latency: 38 },
+  { name: 'Mon', runs: 400, latency: 45 },
+  { name: 'Tue', runs: 300, latency: 38 },
+  { name: 'Wed', runs: 600, latency: 62 },
+  { name: 'Thu', runs: 800, latency: 55 },
+  { name: 'Fri', runs: 700, latency: 40 },
+  { name: 'Sat', runs: 900, latency: 42 },
+  { name: 'Sun', runs: 1100, latency: 38 },
 ];
 
 interface MetricCardProps {
@@ -85,8 +84,8 @@ export default function Analytics() {
           icon={<Zap size={20} />}
         />
         <MetricCard 
-          label="Estimated Cost" 
-          value={formatINR(42500)} 
+          label="Total Runs" 
+          value="2,450" 
           subtext="Volume across 42 endpoints"
           icon={<Cpu size={20} />}
         />
@@ -111,7 +110,7 @@ export default function Analytics() {
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={data}>
                 <defs>
-                  <linearGradient id="colorCost" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id="colorRuns" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#000" stopOpacity={0.1}/>
                     <stop offset="95%" stopColor="#000" stopOpacity={0}/>
                   </linearGradient>
@@ -141,7 +140,7 @@ export default function Analytics() {
                   stroke="#000" 
                   strokeWidth={2}
                   fillOpacity={1} 
-                  fill="url(#colorCost)" 
+                  fill="url(#colorRuns)" 
                 />
               </AreaChart>
             </ResponsiveContainer>

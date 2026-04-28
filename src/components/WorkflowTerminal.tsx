@@ -53,10 +53,10 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
     <div className="w-full max-w-3xl mx-auto space-y-8">
       <motion.div 
         animate={{ 
-          backgroundColor: status === 'success' ? '#0d1f0d' : '#111111',
-          borderColor: status === 'success' ? '#4ade80' : '#222'
+          backgroundColor: status === 'success' ? '#f0fdf4' : '#ffffff',
+          borderColor: status === 'success' ? '#4ade80' : '#e4e2e2'
         }}
-        className="rounded-2xl border p-6 shadow-2xl relative overflow-hidden transition-colors duration-500"
+        className="rounded-xl border p-6 shadow-[0_8px_30px_rgba(0,0,0,0.03)] relative overflow-hidden transition-colors duration-500"
       >
         <div className="relative z-10 flex flex-col space-y-4">
           <div 
@@ -72,26 +72,26 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
             data-placeholder="Describe your workflow in plain English..."
             className={cn(
               "min-h-[100px] max-h-[300px] overflow-y-auto font-mono text-[15px] focus:outline-none caret-blue-500 empty:before:content-[attr(data-placeholder)] empty:before:text-blueprint-muted/50",
-              status === 'success' ? "text-green-400" : "text-gray-300"
+              status === 'success' ? "text-green-700" : "text-on-surface"
             )}
           />
 
-          <div className="flex justify-between items-center pt-4 border-t border-white/5">
+          <div className="flex justify-between items-center pt-4 border-t border-outline-variant">
             <div className="flex items-center gap-2">
               <button 
                 onClick={handleCycleExample}
-                className="p-2 text-blueprint-muted hover:text-white transition-colors"
+                className="p-2 text-blueprint-muted hover:text-primary transition-colors"
                 title="Insert example"
               >
                 <Sparkles size={18} />
               </button>
-              <button className="p-2 text-blueprint-muted hover:text-white transition-colors">
+              <button className="p-2 text-blueprint-muted hover:text-primary transition-colors">
                 <Paperclip size={18} />
               </button>
             </div>
 
             <div className="flex items-center gap-4">
-              <button className="p-2 text-blueprint-muted hover:text-white transition-colors">
+              <button className="p-2 text-blueprint-muted hover:text-primary transition-colors">
                 <Mic size={18} />
               </button>
               <button 
@@ -99,7 +99,7 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
                 disabled={isGenerating || !prompt.trim()}
                 className={cn(
                   "w-10 h-10 rounded-full flex items-center justify-center transition-all",
-                  isGenerating ? "bg-white/10 animate-pulse" : "bg-blue-600 hover:bg-blue-500 text-white"
+                  isGenerating ? "bg-surface-container animate-pulse" : "bg-primary hover:bg-inverse-surface text-white"
                 )}
               >
                 {status === 'success' ? (
@@ -128,9 +128,9 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
             <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="absolute inset-0 flex items-center justify-center bg-green-950/20 backdrop-blur-sm z-20"
+              className="absolute inset-0 flex items-center justify-center bg-green-50/90 backdrop-blur-sm z-20"
             >
-               <span className="text-green-400 font-mono text-sm">Workflow created — opening editor...</span>
+               <span className="text-green-700 font-mono text-sm">Workflow created — opening editor...</span>
             </motion.div>
           )}
           {error && (
@@ -138,9 +138,9 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 flex items-center justify-center bg-red-950/30 backdrop-blur-sm z-20 p-6"
+              className="absolute inset-0 flex items-center justify-center bg-red-50/90 backdrop-blur-sm z-20 p-6"
             >
-              <span className="text-red-400 font-mono text-sm text-center">{error}</span>
+              <span className="text-red-700 font-mono text-sm text-center">{error}</span>
             </motion.div>
           )}
         </AnimatePresence>

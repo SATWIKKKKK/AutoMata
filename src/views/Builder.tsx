@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import {
   Search, X, Send, Plus, MoreHorizontal, Play, Pause,
-  Trash2, Edit3, ChevronDown, Clock, DollarSign, Zap,
+  Trash2, Edit3, ChevronDown, Clock, Zap,
   FileText, AlertCircle,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -20,7 +20,6 @@ interface Workflow {
   prompt?: string;
   created_at: string;
   last_run?: string;
-  cost_last_run?: number;
   next_run?: string;
   cron_schedule?: string;
 }
@@ -132,12 +131,6 @@ function WorkflowCard({
               <Clock size={12} />
               Last run: {workflow.last_run ?? 'Never'}
             </span>
-            {workflow.cost_last_run != null && (
-              <span className="flex items-center gap-1">
-                <DollarSign size={12} />
-                ₹{workflow.cost_last_run.toFixed(2)}
-              </span>
-            )}
             <span className="flex items-center gap-1">
               <Zap size={12} />
               Next: {workflow.next_run ?? 'Manual only'}
@@ -219,6 +212,14 @@ export default function Builder({ onViewChange }: BuilderProps) {
       .then((data: { workflows?: Workflow[] }) => setWorkflows(Array.isArray(data?.workflows) ? data.workflows : []))
       .catch(() => setWorkflows([]))
       .finally(() => setLoadingWorkflows(false));
+  }, []);
+
+  useEffect(() => {
+    const pendingTemplatePrompt = sessionStorage.getItem('pending-template-prompt');
+    if (!pendingTemplatePrompt) return;
+    setPrompt(pendingTemplatePrompt);
+    setCharCount(pendingTemplatePrompt.length);
+    sessionStorage.removeItem('pending-template-prompt');
   }, []);
 
   // ── Keyboard shortcut: Escape clears search ─────────────────────────────
@@ -372,18 +373,17 @@ export default function Builder({ onViewChange }: BuilderProps) {
         <div>
           <div
             className={cn(
-              'bg-[#111] rounded-2xl overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.15)] border border-transparent transition-all duration-300',
-              isGenerating && 'animate-[workflowPulse_1.5s_ease-in-out_infinite]',
+              'bg-surface-container-lowest rounded-xl overflow-hidden shadow-[0_8px_30px_rgba(0,0,0,0.03)] border border-outline-variant transition-all duration-300',
               isTransitioning && 'workflow-card-expand fixed inset-0 z-50 rounded-none',
             )}
             style={{ viewTransitionName: 'workflow-card' }}
           >
             {/* Terminal header bar */}
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5">
-              <div className="w-3 h-3 rounded-full bg-red-500/60" />
-              <div className="w-3 h-3 rounded-full bg-yellow-500/60" />
-              <div className="w-3 h-3 rounded-full bg-green-500/60" />
-              <span className="ml-3 text-xs text-white/30 font-mono">automata — workflow generator</span>
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-outline-variant">
+              <div className="w-3 h-3 rounded-full bg-red-200" />
+              <div className="w-3 h-3 rounded-full bg-yellow-200" />
+              <div className="w-3 h-3 rounded-full bg-green-200" />
+              <span className="ml-3 text-xs text-blueprint-muted font-mono">automata — workflow generator</span>
             </div>
 
             {/* Input area */}
@@ -404,32 +404,32 @@ export default function Builder({ onViewChange }: BuilderProps) {
                   disabled={isGenerating}
                   rows={4}
                   placeholder={`Describe your workflow in plain English...\ne.g. Every Monday 9AM, read my Google Sheet and email a summary to my team.`}
-                  className="w-full bg-transparent text-[#d4d4d4] font-mono text-sm placeholder:text-white/20 resize-none border-none focus:ring-0 outline-none leading-relaxed"
+                  className="w-full bg-transparent text-on-surface font-mono text-sm placeholder:text-blueprint-muted resize-none border-none focus:ring-0 outline-none leading-relaxed"
                 />
               </div>
 
               {/* Bottom bar */}
-              <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/5">
-                <div className="flex items-center gap-3 text-white/30">
-                  <button className="hover:text-white/60 transition-colors p-1 rounded" title="Attach file">
+              <div className="flex items-center justify-between mt-4 pt-4 border-t border-outline-variant">
+                <div className="flex items-center gap-3 text-blueprint-muted">
+                  <button className="hover:text-primary transition-colors p-1 rounded" title="Attach file">
                     <FileText size={16} />
                   </button>
-                  <button className="hover:text-white/60 transition-colors p-1 rounded" title="AI suggestions">
+                  <button className="hover:text-primary transition-colors p-1 rounded" title="AI suggestions">
                     <Zap size={16} />
                   </button>
                 </div>
                 <div className="flex items-center gap-4">
-                  <span className={cn('text-xs font-mono', charCount > 400 ? 'text-red-400' : 'text-white/30')}>
+                  <span className={cn('text-xs font-mono', charCount > 400 ? 'text-red-500' : 'text-blueprint-muted')}>
                     {charCount} / {MAX_CHARS}
                   </span>
                   <button
                     onClick={handleGenerate}
                     disabled={isGenerating || !prompt.trim()}
-                    className="flex items-center gap-2 bg-white text-black px-5 py-2 rounded-full text-sm font-semibold hover:bg-gray-100 transition-colors disabled:opacity-40"
+                    className="flex items-center gap-2 bg-primary text-on-primary px-5 py-2 rounded-full text-sm font-semibold hover:bg-inverse-surface transition-colors disabled:opacity-40"
                   >
                     {isGenerating ? (
                       <>
-                        <div className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                        <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                         Generating…
                       </>
                     ) : (

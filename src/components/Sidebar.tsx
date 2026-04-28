@@ -10,6 +10,8 @@ import {
   Menu,
   Home,
   Cpu,
+  FileText,
+  Activity,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { View } from '../App';
@@ -84,6 +86,7 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
         {navItem('builder', 'Builder', Cpu, currentView, onViewChange, isCollapsed)}
         {navItem('terminal', 'Terminal', Terminal, currentView, onViewChange, isCollapsed)}
         {navItem('workflows', 'Workflows', Workflow, currentView, onViewChange, isCollapsed)}
+        {navItem('templates', 'Templates', FileText, currentView, onViewChange, isCollapsed)}
         {navItem('registry', 'Integrations', Layers, currentView, onViewChange, isCollapsed)}
         {navItem('analytics', 'Analytics', BarChart2, currentView, onViewChange, isCollapsed)}
       </div>
@@ -91,6 +94,7 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
       {/* Bottom: Docs + Settings */}
       <div className="mt-auto border-t border-blueprint-line pt-4 flex flex-col gap-1 px-2">
         {navItem('docs', 'Docs', BookOpen, currentView, onViewChange, isCollapsed)}
+        {navItem('pulse', 'Pulse', Activity, currentView, onViewChange, isCollapsed)}
         {navItem('settings', 'Settings', Settings, currentView, onViewChange, isCollapsed)}
       </div>
     </motion.nav>

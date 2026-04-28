@@ -81,6 +81,10 @@ type WorkflowRow = {
   cron_schedule: string | null;
   estimated_cost_per_run_inr: number | string | null;
   generation_error: string | null;
+  share_token?: string | null;
+  is_public?: boolean | null;
+  fork_count?: number | string | null;
+  forked_from?: string | null;
   created_at: DbTimestamp;
   updated_at: DbTimestamp;
 };
@@ -88,7 +92,7 @@ type WorkflowRow = {
 type ExtractedMetric = {
   key: string;
   value: number;
-  label?: string;
+  label: string;
 };
 
 type MetricAnomaly = {
@@ -97,6 +101,19 @@ type MetricAnomaly = {
   mean: number;
   stddev: number;
   direction: 'above' | 'below';
+};
+
+type TemplateRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  dag: unknown;
+  prompt_text: string | null;
+  estimated_cost_inr: number | string | null;
+  use_count: number | string | null;
+  is_featured: boolean | null;
+  created_at: DbTimestamp;
 };
 
 const activeWorkflowGenerations = new Set<string>();
@@ -192,6 +209,86 @@ function parseMetricsJson(text: string): ExtractedMetric[] {
 
 async function ensureDatabaseReady() {
   await db.exec(DATABASE_SCHEMA_SQL);
+}
+
+async function seedTemplatesIfEmpty() {
+  const row = await db.prepare(`SELECT COUNT(*)::int AS count FROM templates`).get<{ count: number | string }>();
+  const count = Number(row?.count ?? 0);
+  if (count > 0) return;
+
+  const templates: Array<{
+    name: string;
+    category: string;
+    description: string;
+    prompt_text: string;
+    estimated_cost_inr: number;
+    use_count: number;
+  }> = [
+    {
+      name: 'Weekly Sales Report',
+      category: 'sales',
+      description: 'Read your Google Sheet and email a revenue summary every Monday',
+      use_count: 1847,
+      prompt_text: 'Every Monday at 9AM, read my Google Sheet Weekly Sales Tracker with columns Date Product Units Sold Revenue Returns. Summarize last 7 rows total revenue best selling product return rate and email to team@company.com',
+      estimated_cost_inr: 0.024,
+    },
+    {
+      name: 'Lead Auto-Enrich',
+      category: 'marketing',
+      description: 'When new leads appear in your sheet, draft personalized outreach',
+      use_count: 934,
+      prompt_text: 'When new rows appear in Google Sheet New Leads, read the company and name columns, write a personalized outreach email for each lead, and send via Gmail',
+      estimated_cost_inr: 0.038,
+    },
+    {
+      name: 'Client Follow-up',
+      category: 'sales',
+      description: 'Auto-detect stale deals and send follow-ups every Friday',
+      use_count: 712,
+      prompt_text: 'Every Friday at 5PM, read my Google Sheet Pipeline for rows with no update in 7 days, write a polite follow-up email for each, send via Gmail',
+      estimated_cost_inr: 0.031,
+    },
+    {
+      name: 'Monthly Board Summary',
+      category: 'operations',
+      description: 'Pull monthly metrics and create a Notion executive brief',
+      use_count: 445,
+      prompt_text: 'On the 1st of every month at 8AM, read last months data from Google Sheet Monthly Metrics, write a 300 word executive summary, create a Notion page titled Monthly Board Update',
+      estimated_cost_inr: 0.052,
+    },
+    {
+      name: 'Invoice Reminder',
+      category: 'finance',
+      description: 'Auto-detect unpaid invoices and send reminders weekly',
+      use_count: 398,
+      prompt_text: 'Every Monday, read Google Sheet Invoices for rows where Status is Unpaid and Due Date is past, send a polite payment reminder email to the client email column for each row',
+      estimated_cost_inr: 0.028,
+    },
+    {
+      name: 'Slack Daily Digest',
+      category: 'operations',
+      description: 'Post a daily workflow activity digest to your Slack channel',
+      use_count: 301,
+      prompt_text: 'Every weekday at 9AM, summarize yesterday workflow activity and what ran successfully, post digest to Slack default channel',
+      estimated_cost_inr: 0.019,
+    },
+  ];
+
+  for (const template of templates) {
+    await db.prepare(`
+      INSERT INTO templates (id, name, description, category, dag, prompt_text, estimated_cost_inr, use_count, is_featured, created_at)
+      VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, FALSE, NOW())
+    `).run(
+      uuidv4(),
+      template.name,
+      template.description,
+      template.category,
+      JSON.stringify(null),
+      template.prompt_text,
+      template.estimated_cost_inr,
+      template.use_count,
+    );
+  }
 }
 
 async function ensureUserWorkspace(user: SessionUser) {
@@ -333,6 +430,10 @@ function serializeWorkflowRow(row: WorkflowRow | undefined | null) {
     cronSchedule: row.cron_schedule,
     estimatedCostPerRunInr: Number(row.estimated_cost_per_run_inr ?? 0),
     generationError: row.generation_error,
+    shareToken: row.share_token ?? null,
+    isPublic: Boolean(row.is_public),
+    forkCount: Number(row.fork_count ?? 0),
+    forkedFrom: row.forked_from ?? null,
     createdAt: toIsoTimestamp(row.created_at),
     updatedAt: toIsoTimestamp(row.updated_at ?? row.created_at),
     created_at: toIsoTimestamp(row.created_at),
@@ -367,6 +468,7 @@ async function getOwnedWorkflow(workflowId: string, user: SessionUser) {
 
 async function startServer() {
   await ensureDatabaseReady();
+  await seedTemplatesIfEmpty();
 
   const app = express();
   const preferredPort = Number(process.env.PORT) || 3000;
@@ -1050,6 +1152,7 @@ async function startServer() {
           };
         },
         onNodeUpdate: async (event: NodeExecutionEvent) => {
+          console.log(`[executeWorkflow.node] run=${runId} node=${event.nodeId} status=${event.status}`);
           const executionId = nodeExecutionIds.get(event.nodeId) ?? uuidv4();
           const hasExecutionRow = nodeExecutionIds.has(event.nodeId);
           nodeExecutionIds.set(event.nodeId, executionId);
@@ -1154,6 +1257,7 @@ async function startServer() {
             runningTotalCostInr: event.runningTotalCostInr,
             timestamp: new Date().toISOString(),
           });
+          console.log(`[runEvent.emit] run=${runId} event=node_update node=${event.nodeId} status=${event.status}`);
         },
       });
 
@@ -1205,6 +1309,7 @@ async function startServer() {
         durationMs: Date.now() - startedAt,
         error: result.error ?? (cancelledRuns.has(runId) ? 'Run stopped by user.' : null),
       });
+      console.log(`[runEvent.emit] run=${runId} event=run_complete status=${finalStatus}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Run failed.';
       await db.prepare(`
@@ -1222,6 +1327,7 @@ async function startServer() {
         durationMs: Date.now() - startedAt,
         error: message,
       });
+      console.log(`[runEvent.emit] run=${runId} event=run_complete status=failed error=${message}`);
     } finally {
       cancelledRuns.delete(runId);
       activeWorkflowRuns.delete(runId);
@@ -1294,21 +1400,33 @@ async function startServer() {
     const user = await requireSession(req, res);
     if (!user) return;
 
+    console.log(`[workflows.patch] user=${user.userId} workflow=${req.params.id}`);
+
     const workflow = await getOwnedWorkflow(req.params.id, user);
     if (!workflow) {
       return res.status(404).json({ error: 'Workflow not found.' });
     }
 
-    const { name, status, description } = req.body;
-    await db.prepare(`
+    const { name, status, description } = req.body as { name?: string; status?: string; description?: string };
+    const allowedStatuses = new Set(['active', 'paused', 'draft', 'ready']);
+    if (status != null && !allowedStatuses.has(String(status))) {
+      return res.status(400).json({ error: 'Invalid workflow status.' });
+    }
+
+    const updateResult = await db.prepare(`
       UPDATE workflows
       SET name = COALESCE(?, name),
           status = COALESCE(?, status),
           description = COALESCE(?, description),
           updated_at = NOW()
-      WHERE id = ?
-    `).run(name ?? null, status ?? null, description ?? null, req.params.id);
-    res.json({ workflow: serializeWorkflowRow(await getWorkflowById(req.params.id)) });
+      WHERE id = ? AND user_id = ?
+    `).run(name ?? null, status ?? null, description ?? null, req.params.id, user.userId);
+
+    if ((updateResult.rowCount ?? 0) === 0) {
+      return res.status(404).json({ error: 'Workflow not found.' });
+    }
+
+    res.json({ workflow: serializeWorkflowRow(await getOwnedWorkflow(req.params.id, user)) });
   });
 
   app.delete("/api/workflows/:id", async (req, res) => {
@@ -1394,6 +1512,7 @@ async function startServer() {
           estimatedCostPerRunInr: workflow.estimated_cost_per_run_inr ?? 0,
         });
       }
+      await new Promise((resolve) => setTimeout(resolve, 500));
       return res.end();
     }
 
@@ -1409,7 +1528,10 @@ async function startServer() {
     const handler = (payload: { event: string; data: unknown }) => {
       writeSSE(res, payload.event, payload.data);
       if (payload.event === 'complete' || payload.event === 'error') {
-        cleanup();
+        void (async () => {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          cleanup();
+        })();
       }
     };
 
@@ -1469,6 +1591,83 @@ async function startServer() {
     });
   });
 
+  app.get('/api/workflows/:id/runs', async (req, res) => {
+    const user = await requireSession(req, res);
+    if (!user) return;
+
+    const workflow = await getOwnedWorkflow(req.params.id, user);
+    if (!workflow) {
+      return res.status(404).json({ error: 'Workflow not found.' });
+    }
+
+    const runs = await db.prepare(`
+      SELECT id, status, trigger, started_at, ended_at
+      FROM workflow_runs
+      WHERE workflow_id = ?
+      ORDER BY started_at DESC
+      LIMIT 10
+    `).all<{
+      id: string;
+      status: string;
+      trigger: string | null;
+      started_at: DbTimestamp;
+      ended_at: DbTimestamp;
+    }>(workflow.id);
+
+    const runIds = new Set(runs.map((run) => run.id));
+    const nodeLogs = runs.length > 0
+      ? await db.prepare(`
+          SELECT ne.run_id, ne.node_id, ne.node_label, ne.status, ne.output_data, ne.created_at
+          FROM node_executions ne
+          INNER JOIN workflow_runs wr ON wr.id = ne.run_id
+          WHERE wr.workflow_id = ?
+          ORDER BY ne.created_at ASC
+        `).all<{
+          run_id: string;
+          node_id: string;
+          node_label: string | null;
+          status: string;
+          output_data: unknown;
+          created_at: DbTimestamp;
+        }>(workflow.id)
+      : [];
+
+    const logsByRun = new Map<string, Array<{
+      node_id: string;
+      node_label: string;
+      status: string;
+      output_preview: string;
+      created_at: string | null;
+    }>>();
+    for (const log of nodeLogs) {
+      if (!runIds.has(log.run_id)) continue;
+      const current = logsByRun.get(log.run_id) ?? [];
+      const previewRaw = typeof log.output_data === 'string' ? log.output_data : JSON.stringify(log.output_data ?? '');
+      current.push({
+        node_id: log.node_id,
+        node_label: log.node_label ?? log.node_id,
+        status: log.status,
+        output_preview: previewRaw.length > 180 ? `${previewRaw.slice(0, 180)}...` : previewRaw,
+        created_at: toIsoTimestamp(log.created_at),
+      });
+      logsByRun.set(log.run_id, current);
+    }
+
+    res.json({
+      runs: runs.map((run) => ({
+        id: run.id,
+        status: run.status,
+        trigger: run.trigger ?? 'manual',
+        started_at: toIsoTimestamp(run.started_at),
+        ended_at: toIsoTimestamp(run.ended_at),
+        duration_ms: run.ended_at
+          ? (new Date(String(run.ended_at)).getTime() - new Date(String(run.started_at)).getTime())
+          : null,
+        node_logs: logsByRun.get(run.id) ?? [],
+      })),
+    });
+  });
+
   app.get('/api/runs/:runId/stream', async (req, res) => {
     const user = await requireSession(req, res);
     if (!user) return;
@@ -1508,6 +1707,7 @@ async function startServer() {
 
     const channel = `run:${run.id}`;
     const handler = (payload: { event: string; data: unknown }) => {
+      console.log(`[runEvent.stream] run=${run.id} event=${payload.event}`);
       writeSSE(res, payload.event, payload.data);
       if (payload.event === 'run_complete') {
         cleanup();
@@ -1550,6 +1750,44 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  app.get('/api/runs/:runId', async (req, res) => {
+    const user = await requireSession(req, res);
+    if (!user) return;
+
+    const run = await db.prepare(`
+      SELECT wr.id, wr.status, wr.started_at, wr.ended_at, wr.trigger, wr.total_tokens, wr.total_cost_inr, wr.workflow_id
+      FROM workflow_runs wr
+      INNER JOIN workflows w ON w.id = wr.workflow_id
+      WHERE wr.id = ? AND w.user_id = ?
+      LIMIT 1
+    `).get<{
+      id: string;
+      status: string;
+      started_at: DbTimestamp;
+      ended_at: DbTimestamp;
+      trigger: string | null;
+      total_tokens: number | string | null;
+      total_cost_inr: number | string | null;
+      workflow_id: string;
+    }>(req.params.runId, user.userId);
+
+    if (!run) {
+      return res.status(404).json({ error: 'Run not found.' });
+    }
+
+    res.json({
+      run: {
+        id: run.id,
+        workflow_id: run.workflow_id,
+        status: run.status,
+        trigger: run.trigger ?? 'manual',
+        started_at: toIsoTimestamp(run.started_at),
+        ended_at: toIsoTimestamp(run.ended_at),
+        duration_ms: run.ended_at ? (new Date(String(run.ended_at)).getTime() - new Date(String(run.started_at)).getTime()) : null,
+      },
+    });
+  });
+
   app.get('/api/memories/search', async (req, res) => {
     const user = await requireSession(req, res);
     if (!user) return;
@@ -1568,6 +1806,247 @@ async function startServer() {
         created_at: toIsoTimestamp(row.created_at),
       })),
     });
+  });
+
+  app.get('/api/templates', async (_req, res) => {
+    const rows = await db.prepare(`
+      SELECT id, name, description, category, dag, prompt_text, estimated_cost_inr, use_count, is_featured, created_at
+      FROM templates
+      ORDER BY use_count DESC, created_at DESC
+    `).all<TemplateRow>();
+    res.json({
+      templates: rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        description: row.description ?? '',
+        category: row.category ?? '',
+        dag: row.dag ?? null,
+        prompt_text: row.prompt_text ?? '',
+        estimated_cost_inr: Number(row.estimated_cost_inr ?? 0),
+        use_count: Number(row.use_count ?? 0),
+        is_featured: Boolean(row.is_featured),
+        created_at: toIsoTimestamp(row.created_at),
+      })),
+    });
+  });
+
+  app.get('/api/templates/:id', async (req, res) => {
+    const row = await db.prepare(`
+      SELECT id, name, description, category, dag, prompt_text, estimated_cost_inr, use_count, is_featured, created_at
+      FROM templates
+      WHERE id = ?
+      LIMIT 1
+    `).get<TemplateRow>(req.params.id);
+    if (!row) {
+      return res.status(404).json({ error: 'Template not found.' });
+    }
+    res.json({
+      template: {
+        id: row.id,
+        name: row.name,
+        description: row.description ?? '',
+        category: row.category ?? '',
+        dag: row.dag ?? null,
+        prompt_text: row.prompt_text ?? '',
+        estimated_cost_inr: Number(row.estimated_cost_inr ?? 0),
+        use_count: Number(row.use_count ?? 0),
+        is_featured: Boolean(row.is_featured),
+        created_at: toIsoTimestamp(row.created_at),
+      },
+    });
+  });
+
+  app.post('/api/templates/:id/use', async (req, res) => {
+    const row = await db.prepare(`
+      UPDATE templates
+      SET use_count = COALESCE(use_count, 0) + 1
+      WHERE id = ?
+      RETURNING prompt_text, use_count
+    `).get<{ prompt_text: string | null; use_count: number | string }>(req.params.id);
+    if (!row) {
+      return res.status(404).json({ error: 'Template not found.' });
+    }
+    res.json({
+      prompt_text: row.prompt_text ?? '',
+      use_count: Number(row.use_count ?? 0),
+    });
+  });
+
+  app.get('/api/pulse', async (req, res) => {
+    const user = await requireSession(req, res);
+    if (!user) return;
+
+    const days = Math.max(1, Math.min(365, Number(req.query.days ?? 30) || 30));
+    const metricRows = await db.prepare(`
+      SELECT wm.workflow_id, wm.metric_key, wm.metric_value, wm.content, wm.created_at, w.name AS workflow_name
+      FROM workflow_memories wm
+      INNER JOIN workflows w ON w.id = wm.workflow_id
+      WHERE wm.user_id = ?
+        AND wm.metric_value IS NOT NULL
+        AND wm.created_at >= NOW() - (?::text || ' days')::interval
+      ORDER BY wm.created_at ASC
+    `).all<{
+      workflow_id: string;
+      metric_key: string | null;
+      metric_value: number | string | null;
+      content: string | null;
+      created_at: DbTimestamp;
+      workflow_name: string | null;
+    }>(user.userId, String(days));
+
+    const grouped = new Map<string, typeof metricRows>();
+    for (const row of metricRows) {
+      const key = String(row.metric_key ?? '').trim();
+      if (!key) continue;
+      const current = grouped.get(key) ?? [];
+      current.push(row);
+      grouped.set(key, current);
+    }
+
+    const widgets = Array.from(grouped.entries()).map(([metricKey, rows]) => {
+      const points = rows.map((row) => ({
+        date: toIsoTimestamp(row.created_at),
+        value: Number(row.metric_value ?? 0),
+      }));
+      const latest = rows[rows.length - 1];
+      const previous = rows.length >= 2 ? Number(rows[rows.length - 2].metric_value ?? 0) : null;
+      const latestValue = Number(latest.metric_value ?? 0);
+      const changePct = previous && Number.isFinite(previous) && previous !== 0
+        ? Number((((latestValue - previous) / previous) * 100).toFixed(1))
+        : 0;
+      return {
+        metric_key: metricKey,
+        latest_value: latestValue,
+        latest_label: String(latest.content ?? '').slice(0, 120),
+        data_points: points,
+        change_pct: changePct,
+        workflow_name: latest.workflow_name ?? 'Workflow',
+      };
+    });
+
+    const totalWorkflowsRow = await db.prepare(`
+      SELECT COUNT(*)::int AS count
+      FROM workflows
+      WHERE user_id = ?
+    `).get<{ count: number | string }>(user.userId);
+    const activeWorkflowsRow = await db.prepare(`
+      SELECT COUNT(*)::int AS count
+      FROM workflows
+      WHERE user_id = ? AND status = 'active'
+    `).get<{ count: number | string }>(user.userId);
+    const runsThisMonthRow = await db.prepare(`
+      SELECT COUNT(*)::int AS count, COALESCE(SUM(total_cost_inr), 0) AS total_cost
+      FROM workflow_runs
+      WHERE user_id = ? AND started_at >= date_trunc('month', NOW())
+    `).get<{ count: number | string; total_cost: number | string }>(user.userId);
+
+    const runsThisMonth = Number(runsThisMonthRow?.count ?? 0);
+    const summary = {
+      total_workflows: Number(totalWorkflowsRow?.count ?? 0),
+      active_workflows: Number(activeWorkflowsRow?.count ?? 0),
+      runs_this_month: runsThisMonth,
+      cost_this_month_inr: Number(runsThisMonthRow?.total_cost ?? 0),
+      estimated_hours_saved: Number((runsThisMonth * 0.5).toFixed(1)),
+    };
+
+    res.json({ widgets, summary });
+  });
+
+  app.post('/api/workflows/:id/share', async (req, res) => {
+    const user = await requireSession(req, res);
+    if (!user) return;
+    console.log(`[workflows.share] user=${user.userId} workflow=${req.params.id}`);
+    const workflow = await getOwnedWorkflow(req.params.id, user);
+    if (!workflow) return res.status(404).json({ error: 'Workflow not found.' });
+    const token = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    await db.prepare(`
+      UPDATE workflows
+      SET share_token = ?, is_public = TRUE, updated_at = NOW()
+      WHERE id = ? AND user_id = ?
+    `).run(token, workflow.id, user.userId);
+    res.json({ share_url: `http://localhost:3000/w/${token}` });
+  });
+
+  app.post('/api/workflows/:id/unshare', async (req, res) => {
+    const user = await requireSession(req, res);
+    if (!user) return;
+    console.log(`[workflows.unshare] user=${user.userId} workflow=${req.params.id}`);
+    const workflow = await getOwnedWorkflow(req.params.id, user);
+    if (!workflow) return res.status(404).json({ error: 'Workflow not found.' });
+    await db.prepare(`
+      UPDATE workflows
+      SET is_public = FALSE, share_token = NULL, updated_at = NOW()
+      WHERE id = ? AND user_id = ?
+    `).run(workflow.id, user.userId);
+    res.json({ success: true });
+  });
+
+  app.get('/api/w/:token', async (req, res) => {
+    const row = await db.prepare(`
+      SELECT id, name, description, dag, estimated_cost_per_run_inr, fork_count
+      FROM workflows
+      WHERE share_token = ? AND is_public = TRUE
+      LIMIT 1
+    `).get<{
+      id: string;
+      name: string;
+      description: string | null;
+      dag: unknown;
+      estimated_cost_per_run_inr: number | string | null;
+      fork_count: number | string | null;
+    }>(req.params.token);
+    if (!row) {
+      return res.status(404).json({ error: 'Shared workflow not found.' });
+    }
+    res.json({
+      workflow: {
+        id: row.id,
+        name: row.name,
+        description: row.description ?? '',
+        dag: typeof row.dag === 'string' ? JSON.parse(row.dag) : row.dag,
+        estimated_cost_per_run_inr: Number(row.estimated_cost_per_run_inr ?? 0),
+        fork_count: Number(row.fork_count ?? 0),
+      },
+    });
+  });
+
+  app.post('/api/w/:token/fork', async (req, res) => {
+    const user = await requireSession(req, res);
+    if (!user) return;
+    const source = await db.prepare(`
+      SELECT *
+      FROM workflows
+      WHERE share_token = ? AND is_public = TRUE
+      LIMIT 1
+    `).get<WorkflowRow>(req.params.token);
+    if (!source) {
+      return res.status(404).json({ error: 'Shared workflow not found.' });
+    }
+    const newId = uuidv4();
+    await db.prepare(`
+      INSERT INTO workflows (
+        id, user_id, workspace_id, name, description, prompt, dag, status,
+        cron_schedule, estimated_cost_per_run_inr, generation_error, forked_from, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, 'ready', ?, ?, ?, ?, NOW(), NOW())
+    `).run(
+      newId,
+      user.userId,
+      user.workspaceId,
+      `${source.name} (fork)`,
+      source.description ?? '',
+      source.prompt ?? '',
+      toJsonParam(parseDag(source.dag)),
+      source.cron_schedule,
+      Number(source.estimated_cost_per_run_inr ?? 0),
+      null,
+      source.id,
+    );
+    await db.prepare(`
+      UPDATE workflows
+      SET fork_count = COALESCE(fork_count, 0) + 1, updated_at = NOW()
+      WHERE id = ?
+    `).run(source.id);
+    res.json({ workflowId: newId });
   });
 
   // ── Terminal (streaming chat) ─────────────────────────────────────────
