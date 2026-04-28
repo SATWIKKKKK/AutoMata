@@ -1,8 +1,5 @@
 {
-  "crons": [
-    {
-      "path": "/api/workflows/execute",
-      "schedule": "* * * * *"
-    }
-  ]
+	"framework": "vite",
+	"buildCommand": "npm run build",
+	"outputDirectory": "dist"
 }

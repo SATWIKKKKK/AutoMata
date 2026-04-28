@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clearSessionState, getStoredUser, persistSessionUser } from '../lib/session';
+import { useSearchParams } from 'react-router-dom';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -197,42 +198,91 @@ function ProfileTab({ onSignOut }: { onSignOut: () => void }) {
 
 // ─── Integrations Tab ─────────────────────────────────────────────────────────
 
-type IntStatus = 'connected' | 'disconnected' | 'coming_soon';
+type IntStatus = 'connected' | 'disconnected';
+type IntMode = 'oauth' | 'env';
+type IntSource = 'oauth' | 'env';
+
 interface Integration {
   id: string; label: string; description: string; icon: string;
-  status: IntStatus; account?: string; connectedAt?: string;
+  mode: IntMode; envVar?: string;
+  status: IntStatus; account?: string; connectedAt?: string; source?: IntSource;
 }
 
 const BASE_INTEGRATIONS: Integration[] = [
-  { id: 'gmail', label: 'Gmail', description: 'Send emails and read your inbox via OAuth.', icon: '📧', status: 'disconnected' },
-  { id: 'google_sheets', label: 'Google Sheets', description: 'Read and write spreadsheet data.', icon: '📊', status: 'disconnected' },
-  { id: 'slack', label: 'Slack', description: 'Post messages to channels and DMs.', icon: '💬', status: 'coming_soon' },
-  { id: 'notion', label: 'Notion', description: 'Create and update pages in your workspace.', icon: '📝', status: 'coming_soon' },
-  { id: 'hubspot', label: 'HubSpot', description: 'Manage contacts, deals and CRM records.', icon: '🔄', status: 'coming_soon' },
+  { id: 'gmail', label: 'Gmail', description: 'Send emails and read your inbox via OAuth.', icon: '📧', mode: 'oauth', status: 'disconnected' },
+  { id: 'google_sheets', label: 'Google Sheets', description: 'Read and write spreadsheet data.', icon: '📊', mode: 'oauth', status: 'disconnected' },
+  { id: 'slack', label: 'Slack', description: 'Post messages to channels and DMs.', icon: '💬', mode: 'env', envVar: 'SLACK_BOT_TOKEN', status: 'disconnected' },
+  { id: 'notion', label: 'Notion', description: 'Create and update pages in your workspace.', icon: '📝', mode: 'env', envVar: 'NOTION_TOKEN', status: 'disconnected' },
 ];
 
 function IntegrationsTab() {
+  const [searchParams] = useSearchParams();
   const [integrations, setIntegrations] = useState<Integration[]>(BASE_INTEGRATIONS);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState<Integration | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  const refreshIntegrations = async () => {
+    try {
+      const response = await fetch('/api/integrations');
+      const data = await response.json();
+      if (!Array.isArray(data)) {
+        setIntegrations(BASE_INTEGRATIONS);
+        return;
+      }
+
+      setIntegrations(BASE_INTEGRATIONS.map((intg) => {
+        const found = data.find((entry: any) => entry.provider === intg.id);
+        if (found) {
+          return {
+            ...intg,
+            status: 'connected' as IntStatus,
+            account: found.account,
+            connectedAt: found.connected_at,
+            source: found.source === 'env' ? 'env' : 'oauth',
+          };
+        }
+        return {
+          ...intg,
+          status: 'disconnected' as IntStatus,
+          account: undefined,
+          connectedAt: undefined,
+          source: undefined,
+        };
+      }));
+    } catch {
+      setIntegrations(BASE_INTEGRATIONS);
+    }
+  };
 
   useEffect(() => {
-    fetch('/api/integrations')
-      .then(r => r.json())
-      .then((data: any) => {
-        if (!Array.isArray(data)) return;
-        setIntegrations(prev => prev.map(intg => {
-          const found = data.find((d: any) => d.provider === intg.id);
-          if (found) return { ...intg, status: 'connected' as IntStatus, account: found.account, connectedAt: found.connected_at };
-          return intg;
-        }));
-      }).catch(() => {});
+    void refreshIntegrations();
   }, []);
+
+  useEffect(() => {
+    const connectedProvider = searchParams.get('connected');
+    if (connectedProvider) {
+      const matched = BASE_INTEGRATIONS.find((integration) => integration.id === connectedProvider);
+      if (matched) {
+        setStatusMessage(`${matched.label} integration connected successfully.`);
+      } else if (connectedProvider === 'google') {
+        setStatusMessage('Google integrations connected successfully.');
+      }
+      void refreshIntegrations();
+    }
+  }, [searchParams]);
 
   const handleDisconnect = async (intg: Integration) => {
     setDisconnecting(intg.id);
-    await fetch(`/api/integrations/${intg.id}`, { method: 'DELETE' }).catch(() => {});
-    setIntegrations(prev => prev.map(i => i.id === intg.id ? { ...i, status: 'disconnected' as IntStatus, account: undefined } : i));
+    const response = await fetch(`/api/integrations/${intg.id}`, { method: 'DELETE' }).catch(() => null);
+    if (response && !response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      setStatusMessage(payload?.error || `${intg.label} cannot be disconnected from UI.`);
+      setDisconnecting(null);
+      setConfirmDisconnect(null);
+      return;
+    }
+    await refreshIntegrations();
     setDisconnecting(null); setConfirmDisconnect(null);
   };
 
@@ -240,6 +290,12 @@ function IntegrationsTab() {
     <div>
       <h3 className="font-headline-md text-headline-md text-blueprint-accent mb-1">Connected Integrations</h3>
       <p className="font-body-md text-body-md text-blueprint-muted mb-8">Connect external services to enable automated workflows.</p>
+      {statusMessage && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+          <CheckCircle2 size={16} />
+          {statusMessage}
+        </div>
+      )}
       <div className="space-y-4">
         {integrations.map(intg => (
           <div key={intg.id} className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between p-4 sm:p-6 bg-surface-container-lowest border border-blueprint-line rounded-xl hover:shadow-sm transition-shadow">
@@ -249,27 +305,36 @@ function IntegrationsTab() {
                 <div className="flex items-center gap-2 mb-0.5">
                   <span className="font-ui-label text-ui-label text-primary">{intg.label}</span>
                   {intg.status === 'connected' && <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-technical-mono rounded-full border border-green-200 uppercase">Connected</span>}
-                  {intg.status === 'coming_soon' && <span className="px-2 py-0.5 bg-blueprint-bg text-blueprint-muted text-[10px] font-technical-mono rounded-full border border-blueprint-line uppercase">Coming Soon</span>}
+                  {intg.status === 'connected' && intg.source === 'env' && (
+                    <span className="px-2 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-technical-mono rounded-full border border-blue-200 uppercase">Env Managed</span>
+                  )}
                 </div>
                 <p className="font-body-md text-body-md text-blueprint-muted text-xs">{intg.description}</p>
                 {intg.account && <p className="text-[10px] font-technical-mono text-blueprint-muted mt-0.5">{intg.account}</p>}
+                {intg.status === 'disconnected' && intg.mode === 'env' && intg.envVar && (
+                  <p className="text-[10px] font-technical-mono text-blueprint-muted mt-0.5">Set {intg.envVar} in .env and restart the server.</p>
+                )}
               </div>
             </div>
             <div className="shrink-0 sm:text-right">
-              {intg.status === 'connected' && (
+              {intg.status === 'connected' && intg.source !== 'env' && (
                 <button onClick={() => setConfirmDisconnect(intg)} disabled={disconnecting === intg.id}
                   className="text-xs border border-red-200 text-red-600 px-4 py-2 rounded-full font-ui-label hover:bg-red-50 transition-colors disabled:opacity-50">
                   {disconnecting === intg.id ? 'Disconnecting…' : 'Disconnect'}
                 </button>
               )}
-              {intg.status === 'disconnected' && (
-                <button onClick={() => { window.location.href = `/api/integrations/connect/${intg.id}`; }}
-                  className="text-xs border border-outline-variant text-primary px-4 py-2 rounded-full font-ui-label hover:bg-surface-container transition-colors flex items-center gap-1.5">
-                  Connect <ExternalLink size={11} />
-                </button>
+              {intg.status === 'connected' && intg.source === 'env' && (
+                <span className="inline-block text-xs border border-blue-200 text-blue-700 px-4 py-2 rounded-full font-ui-label bg-blue-50">Managed in .env</span>
               )}
-              {intg.status === 'coming_soon' && (
-                <button disabled className="text-xs border border-blueprint-line text-blueprint-muted px-4 py-2 rounded-full font-ui-label cursor-not-allowed opacity-50">Coming Soon</button>
+              {intg.status === 'disconnected' && (
+                intg.mode === 'oauth' ? (
+                  <button onClick={() => { window.location.href = `/api/integrations/connect/${intg.id}`; }}
+                    className="text-xs border border-outline-variant text-primary px-4 py-2 rounded-full font-ui-label hover:bg-surface-container transition-colors flex items-center gap-1.5">
+                    Connect <ExternalLink size={11} />
+                  </button>
+                ) : (
+                  <button disabled className="text-xs border border-blueprint-line text-blueprint-muted px-4 py-2 rounded-full font-ui-label cursor-not-allowed">Configure in .env</button>
+                )
               )}
             </div>
           </div>
@@ -386,8 +451,12 @@ function BillingTab() {
 
 // ─── Main Settings ────────────────────────────────────────────────────────────
 
-export default function Settings({ onViewChange }: { onViewChange?: (v: any) => void }) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
+export default function Settings({ onViewChange, initialTab = 'profile' }: { onViewChange?: (v: any) => void; initialTab?: SettingsTab }) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   return (
     <div className="flex flex-col h-full bg-blueprint-bg overflow-hidden">

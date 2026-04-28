@@ -58,7 +58,12 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
       <div className={cn('mb-8 px-4 flex items-center', isCollapsed ? 'justify-center' : 'justify-between')}>
         {!isCollapsed && (
           <div className="overflow-hidden whitespace-nowrap">
-            <h1 className="font-serif italic text-3xl text-blueprint-accent tracking-tight">AUTOMATA</h1>
+            <button
+              onClick={() => onViewChange('landing')}
+              className="font-serif italic text-3xl text-blueprint-accent tracking-tight"
+            >
+              AUTOMATA
+            </button>
             <p className="text-technical-mono text-blueprint-muted mt-1">v2.4.0-stable</p>
           </div>
         )}

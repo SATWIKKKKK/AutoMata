@@ -73,8 +73,9 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
 
           {/* Centre nav */}
           <div className="hidden lg:flex items-center gap-6 absolute left-1/2 -translate-x-1/2 z-0">
-            <button onClick={() => onViewChange('workflows')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Workflows</button>
-            <button onClick={() => onViewChange('docs')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Docs</button>
+            <button onClick={() => onViewChange('workflows')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Solutions</button>
+            <button onClick={() => onViewChange('docs')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Use Cases</button>
+            <button onClick={() => onViewChange('docs')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Developers</button>
             <button onClick={() => onViewChange('pricing')} className="text-ui-label text-blueprint-muted hover:text-primary transition-colors whitespace-nowrap">Pricing</button>
           </div>
 
@@ -127,13 +128,13 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
                   onClick={() => onViewChange('auth')}
                   className="text-ui-label font-medium text-on-background px-2 md:px-4 hover:text-primary transition-colors"
                 >
-                  Log In
+                  Login
                 </button>
                 <button
                   onClick={() => onViewChange('signup')}
                   className="bg-black text-white px-4 md:px-6 py-2 md:py-2.5 rounded-full text-ui-label hover:opacity-90 transition-all font-medium whitespace-nowrap"
                 >
-                  Sign Up
+                  Get Started
                 </button>
               </>
             )}

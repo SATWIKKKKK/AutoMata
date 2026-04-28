@@ -1,6 +1,6 @@
 import React, { useLayoutEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BrowserRouter, Routes, Route, Navigate, matchPath, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import PageProgress from './components/PageProgress';
@@ -31,11 +31,18 @@ function getUser() {
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  return getUser()?.loggedIn ? <>{children}</> : <Navigate to="/login" replace />;
+  return getUser()?.loggedIn ? <>{children}</> : <Navigate to="/signin" replace />;
 }
 
-const PUBLIC_PATHS = ['/', '/login', '/signup', '/pricing', '/privacy', '/terms', '/security', '/docs'];
+const PUBLIC_PATHS = ['/', '/login', '/signin', '/signup', '/pricing', '/privacy', '/terms', '/security', '/legal/privacy', '/legal/terms', '/legal/security', '/docs'];
 const APP_PATHS = ['/builder', '/terminal', '/dashboard', '/editor', '/workflows', '/registry', '/analytics', '/settings'];
+
+function SettingsRoute({ onViewChange }: { onViewChange: (view: View) => void }) {
+  const params = useParams<{ tab?: string }>();
+  const tab = params.tab;
+  const normalizedTab = tab === 'integrations' || tab === 'billing' || tab === 'profile' ? tab : 'profile';
+  return <Settings onViewChange={onViewChange} initialTab={normalizedTab} />;
+}
 
 function AppShell() {
   const navigate = useNavigate();
@@ -47,24 +54,32 @@ function AppShell() {
   });
 
   const isWorkflowDetailPath = Boolean(matchPath('/workflows/:id', location.pathname));
+  const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
   const isPublicPath = PUBLIC_PATHS.includes(location.pathname);
-  const isAppPath = APP_PATHS.includes(location.pathname);
+  const isAppPath = APP_PATHS.includes(location.pathname) || isSettingsPath;
   const showAppChrome = isAppPath && !isWorkflowDetailPath;
 
   const pathToView: Record<string, View> = {
-    '/': 'landing', '/login': 'auth', '/signup': 'signup',
+    '/': 'landing', '/login': 'auth', '/signin': 'auth', '/signup': 'signup',
     '/dashboard': 'dashboard', '/builder': 'builder', '/terminal': 'terminal',
     '/editor': 'editor', '/registry': 'registry',
     '/analytics': 'analytics', '/workflows': 'workflows', '/docs': 'docs',
     '/settings': 'settings', '/pricing': 'pricing', '/privacy': 'privacy',
-    '/terms': 'terms', '/security': 'security',
+    '/terms': 'terms', '/security': 'security', '/legal/privacy': 'privacy',
+    '/legal/terms': 'terms', '/legal/security': 'security',
   };
-  const currentView: View = isWorkflowDetailPath ? 'workflows' : (pathToView[location.pathname] ?? 'landing');
+  const currentView: View = isWorkflowDetailPath
+    ? 'workflows'
+    : (isSettingsPath ? 'settings' : (pathToView[location.pathname] ?? 'landing'));
 
   const handleViewChange = (view: View) => {
     const viewToPath: Partial<Record<View, string>> = {
       landing: '/',
-      auth: '/login',
+      auth: '/signin',
+      privacy: '/legal/privacy',
+      terms: '/legal/terms',
+      security: '/legal/security',
+      settings: '/settings/profile',
     };
     setIsMobileSidebarOpen(false);
     navigate(viewToPath[view] ?? `/${view}`);
@@ -147,15 +162,19 @@ function AppShell() {
             <Route path="/" element={
               <Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/docs')} onViewChange={handleViewChange} />
             } />
-            <Route path="/login" element={
+            <Route path="/signin" element={
               getUser()?.loggedIn ? <Navigate to="/builder" replace /> :
               <Auth initialMode="login" onAuthSuccess={() => navigate('/builder')} onBackToLanding={() => navigate('/')} />
             } />
+            <Route path="/login" element={<Navigate to="/signin" replace />} />
             <Route path="/signup" element={
               getUser()?.loggedIn ? <Navigate to="/builder" replace /> :
               <Auth initialMode="signup" onAuthSuccess={() => navigate('/builder')} onBackToLanding={() => navigate('/')} />
             } />
             <Route path="/pricing" element={<Pricing onViewChange={handleViewChange} />} />
+            <Route path="/legal/privacy" element={<Privacy onViewChange={handleViewChange} />} />
+            <Route path="/legal/terms" element={<Terms onViewChange={handleViewChange} />} />
+            <Route path="/legal/security" element={<Security onViewChange={handleViewChange} />} />
             <Route path="/privacy" element={<Privacy onViewChange={handleViewChange} />} />
             <Route path="/terms" element={<Terms onViewChange={handleViewChange} />} />
             <Route path="/security" element={<Security onViewChange={handleViewChange} />} />
@@ -176,7 +195,8 @@ function AppShell() {
             <Route path="/workflows/:id" element={<ProtectedRoute><WorkflowDetail /></ProtectedRoute>} />
             <Route path="/registry" element={<ProtectedRoute><Registry /></ProtectedRoute>} />
             <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
-            <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+            <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
+            <Route path="/settings/:tab" element={<ProtectedRoute><SettingsRoute onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

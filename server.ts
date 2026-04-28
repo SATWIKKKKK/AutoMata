@@ -14,7 +14,6 @@ if (fs.existsSync(envPath)) {
 }
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
-import sqlite3 from "better-sqlite3";
 import {
   buildFallbackSummary,
   buildFallbackWorkflowDag,
@@ -25,137 +24,49 @@ import {
   validateGeneratedWorkflowDag,
   type GeneratedWorkflowDag,
 } from "./src/lib/serverWorkflowUtils.js";
+import db from "./src/lib/db.js";
+import { DATABASE_SCHEMA_SQL } from "./src/lib/dbSchema.js";
 import runEventBus from "./src/lib/runEvents.js";
 import { requestLlmCompletion } from "./src/lib/llmGateway.js";
 import { registerTool } from "./src/lib/toolRegistry.js";
 import { decryptSecret, encryptSecret } from "./src/lib/tokenCrypto.js";
 import { executeWorkflow, type NodeExecutionEvent } from "./src/lib/workflowExecutor.js";
 
-// Full Database Schema Implementation
-const db = sqlite3("orren.db");
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS workspaces (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    budget_limit_inr REAL DEFAULT 10000,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT,
-    email TEXT UNIQUE,
-    role TEXT CHECK(role IN ('owner', 'admin', 'member')),
-    FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS workflows (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    workspace_id TEXT,
-    name TEXT NOT NULL,
-    description TEXT,
-    prompt TEXT,
-    dag TEXT,
-    status TEXT CHECK(status IN ('draft', 'generating', 'ready', 'active', 'paused', 'archived', 'failed')) DEFAULT 'draft',
-    cron_schedule TEXT,
-    estimated_cost_per_run_inr REAL DEFAULT 0,
-    generation_error TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id),
-    FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS workflow_nodes (
-    id TEXT PRIMARY KEY,
-    workflow_id TEXT,
-    type TEXT NOT NULL,
-    label TEXT,
-    config TEXT, -- JSON string
-    pos_x REAL,
-    pos_y REAL,
-    FOREIGN KEY(workflow_id) REFERENCES workflows(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS workflow_edges (
-    id TEXT PRIMARY KEY,
-    workflow_id TEXT,
-    source_node_id TEXT,
-    target_node_id TEXT,
-    condition_label TEXT,
-    FOREIGN KEY(workflow_id) REFERENCES workflows(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS workflow_runs (
-    id TEXT PRIMARY KEY,
-    workflow_id TEXT,
-    status TEXT,
-    trigger TEXT DEFAULT 'manual',
-    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    ended_at DATETIME,
-    total_tokens INTEGER DEFAULT 0,
-    total_cost_inr REAL DEFAULT 0,
-    run_log TEXT, -- JSON string
-    FOREIGN KEY(workflow_id) REFERENCES workflows(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS node_executions (
-    id TEXT PRIMARY KEY,
-    run_id TEXT,
-    node_id TEXT,
-    status TEXT,
-    input_data TEXT,
-    output_data TEXT,
-    tokens_used INTEGER DEFAULT 0,
-    cost_inr REAL DEFAULT 0,
-    duration_ms INTEGER DEFAULT 0,
-    evaluator_score REAL,
-    retry_count INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(run_id) REFERENCES workflow_runs(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS integrations (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT,
-    provider TEXT NOT NULL,
-    access_token TEXT,
-    refresh_token TEXT,
-    account_name TEXT,
-    connected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    expires_at DATETIME,
-    enabled BOOLEAN DEFAULT 1,
-    FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS terminal_messages (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    session_id TEXT NOT NULL,
-    role TEXT CHECK(role IN ('user', 'assistant')) NOT NULL,
-    content TEXT NOT NULL,
-    tokens_used INTEGER DEFAULT 0,
-    cost_inr REAL DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS user_preferences (
-    id TEXT PRIMARY KEY,
-    user_id TEXT UNIQUE NOT NULL,
-    sidebar_open BOOLEAN DEFAULT 0,
-    theme TEXT DEFAULT 'system',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
-
 type SessionUser = {
   userId: string;
   email: string;
   workspaceId: string;
   displayName: string;
+};
+
+type DbTimestamp = string | Date | null | undefined;
+
+type IntegrationProvider = 'gmail' | 'google_sheets' | 'slack' | 'notion';
+
+type IntegrationSource = 'oauth' | 'env';
+
+type IntegrationRow = {
+  provider: string;
+  account: string | null;
+  connected_at: DbTimestamp;
+  source?: IntegrationSource;
+};
+
+const ENV_INTEGRATION_CONFIG: Record<Exclude<IntegrationProvider, 'gmail' | 'google_sheets'>, {
+  tokenEnv: string;
+  accountEnv?: string;
+  fallbackAccount: string;
+}> = {
+  slack: {
+    tokenEnv: 'SLACK_BOT_TOKEN',
+    accountEnv: 'SLACK_BOT_NAME',
+    fallbackAccount: 'Slack Bot (env token)',
+  },
+  notion: {
+    tokenEnv: 'NOTION_TOKEN',
+    accountEnv: 'NOTION_WORKSPACE_NAME',
+    fallbackAccount: 'Notion Integration (env token)',
+  },
 };
 
 type WorkflowRow = {
@@ -165,257 +76,18 @@ type WorkflowRow = {
   name: string;
   description: string | null;
   prompt: string | null;
-  dag: string | null;
+  dag: GeneratedWorkflowDag | string | null;
   status: string;
   cron_schedule: string | null;
-  estimated_cost_per_run_inr: number | null;
+  estimated_cost_per_run_inr: number | string | null;
   generation_error: string | null;
-  created_at: string;
-  updated_at: string | null;
+  created_at: DbTimestamp;
+  updated_at: DbTimestamp;
 };
 
 const activeWorkflowGenerations = new Set<string>();
 const activeWorkflowRuns = new Set<string>();
 const cancelledRuns = new Set<string>();
-
-function columnExists(tableName: string, columnName: string): boolean {
-  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
-  return columns.some((column) => column.name === columnName);
-}
-
-function getTableSql(tableName: string): string {
-  const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`).get(tableName) as { sql?: string } | undefined;
-  return row?.sql ?? '';
-}
-
-function migrateWorkflowsTableIfNeeded() {
-  const currentSql = getTableSql('workflows');
-  if (
-    currentSql.includes('generating') &&
-    columnExists('workflows', 'user_id') &&
-    columnExists('workflows', 'dag') &&
-    columnExists('workflows', 'estimated_cost_per_run_inr') &&
-    columnExists('workflows', 'updated_at')
-  ) {
-    return;
-  }
-
-  db.exec('DROP TABLE IF EXISTS workflows_legacy');
-  db.exec('ALTER TABLE workflows RENAME TO workflows_legacy');
-  db.exec(`
-    CREATE TABLE workflows (
-      id TEXT PRIMARY KEY,
-      user_id TEXT,
-      workspace_id TEXT,
-      name TEXT NOT NULL,
-      description TEXT,
-      prompt TEXT,
-      dag TEXT,
-      status TEXT CHECK(status IN ('draft', 'generating', 'ready', 'active', 'paused', 'archived', 'failed')) DEFAULT 'draft',
-      cron_schedule TEXT,
-      estimated_cost_per_run_inr REAL DEFAULT 0,
-      generation_error TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(user_id) REFERENCES users(id),
-      FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
-    )
-  `);
-
-  const legacyColumns = new Set(
-    (db.prepare('PRAGMA table_info(workflows_legacy)').all() as Array<{ name: string }>).map((column) => column.name),
-  );
-
-  const selectList = [
-    'id',
-    legacyColumns.has('user_id') ? 'user_id' : 'NULL AS user_id',
-    legacyColumns.has('workspace_id') ? 'workspace_id' : "'default' AS workspace_id",
-    'name',
-    legacyColumns.has('description') ? 'description' : "'' AS description",
-    legacyColumns.has('prompt') ? 'prompt' : 'NULL AS prompt',
-    legacyColumns.has('dag') ? 'dag' : 'NULL AS dag',
-    legacyColumns.has('status')
-      ? "CASE WHEN status IN ('draft', 'generating', 'ready', 'active', 'paused', 'archived', 'failed') THEN status ELSE 'draft' END AS status"
-      : "'draft' AS status",
-    legacyColumns.has('cron_schedule') ? 'cron_schedule' : 'NULL AS cron_schedule',
-    legacyColumns.has('estimated_cost_per_run_inr') ? 'estimated_cost_per_run_inr' : '0 AS estimated_cost_per_run_inr',
-    legacyColumns.has('generation_error') ? 'generation_error' : 'NULL AS generation_error',
-    legacyColumns.has('created_at') ? 'created_at' : 'CURRENT_TIMESTAMP AS created_at',
-    legacyColumns.has('updated_at')
-      ? 'COALESCE(updated_at, created_at, CURRENT_TIMESTAMP) AS updated_at'
-      : 'COALESCE(created_at, CURRENT_TIMESTAMP) AS updated_at',
-  ].join(', ');
-
-  db.exec(`
-    INSERT INTO workflows (
-      id, user_id, workspace_id, name, description, prompt, dag, status, cron_schedule,
-      estimated_cost_per_run_inr, generation_error, created_at, updated_at
-    )
-    SELECT ${selectList}
-    FROM workflows_legacy
-  `);
-
-  db.exec('DROP TABLE workflows_legacy');
-}
-
-function repairWorkflowForeignKeyReferences() {
-  const nodesSql = getTableSql('workflow_nodes');
-  if (nodesSql.includes('workflows_legacy')) {
-    db.exec('ALTER TABLE workflow_nodes RENAME TO workflow_nodes_legacy');
-    db.exec(`
-      CREATE TABLE workflow_nodes (
-        id TEXT PRIMARY KEY,
-        workflow_id TEXT,
-        type TEXT NOT NULL,
-        label TEXT,
-        config TEXT,
-        pos_x REAL,
-        pos_y REAL,
-        FOREIGN KEY(workflow_id) REFERENCES workflows(id)
-      )
-    `);
-    db.exec(`
-      INSERT INTO workflow_nodes (id, workflow_id, type, label, config, pos_x, pos_y)
-      SELECT id, workflow_id, type, label, config, pos_x, pos_y
-      FROM workflow_nodes_legacy
-    `);
-    db.exec('DROP TABLE workflow_nodes_legacy');
-  }
-
-  const edgesSql = getTableSql('workflow_edges');
-  if (edgesSql.includes('workflows_legacy')) {
-    db.exec('ALTER TABLE workflow_edges RENAME TO workflow_edges_legacy');
-    db.exec(`
-      CREATE TABLE workflow_edges (
-        id TEXT PRIMARY KEY,
-        workflow_id TEXT,
-        source_node_id TEXT,
-        target_node_id TEXT,
-        condition_label TEXT,
-        FOREIGN KEY(workflow_id) REFERENCES workflows(id)
-      )
-    `);
-    db.exec(`
-      INSERT INTO workflow_edges (id, workflow_id, source_node_id, target_node_id, condition_label)
-      SELECT id, workflow_id, source_node_id, target_node_id, condition_label
-      FROM workflow_edges_legacy
-    `);
-    db.exec('DROP TABLE workflow_edges_legacy');
-  }
-
-  const runsSql = getTableSql('workflow_runs');
-  if (runsSql.includes('workflows_legacy')) {
-    db.exec('ALTER TABLE workflow_runs RENAME TO workflow_runs_legacy');
-
-    const legacyColumns = new Set(
-      (db.prepare('PRAGMA table_info(workflow_runs_legacy)').all() as Array<{ name: string }>).map((column) => column.name),
-    );
-
-    db.exec(`
-      CREATE TABLE workflow_runs (
-        id TEXT PRIMARY KEY,
-        workflow_id TEXT,
-        status TEXT,
-        trigger TEXT DEFAULT 'manual',
-        started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        ended_at DATETIME,
-        total_tokens INTEGER DEFAULT 0,
-        total_cost_inr REAL DEFAULT 0,
-        run_log TEXT,
-        FOREIGN KEY(workflow_id) REFERENCES workflows(id)
-      )
-    `);
-
-    const triggerExpr = legacyColumns.has('trigger') ? 'trigger' : "'manual' AS trigger";
-    const runLogExpr = legacyColumns.has('run_log') ? 'run_log' : 'NULL AS run_log';
-
-    db.exec(`
-      INSERT INTO workflow_runs (
-        id, workflow_id, status, trigger, started_at, ended_at, total_tokens, total_cost_inr, run_log
-      )
-      SELECT
-        id,
-        workflow_id,
-        status,
-        ${triggerExpr},
-        COALESCE(started_at, CURRENT_TIMESTAMP) AS started_at,
-        ended_at,
-        COALESCE(total_tokens, 0) AS total_tokens,
-        COALESCE(total_cost_inr, 0) AS total_cost_inr,
-        ${runLogExpr}
-      FROM workflow_runs_legacy
-    `);
-
-    db.exec('DROP TABLE workflow_runs_legacy');
-  }
-
-  const executionsSql = getTableSql('node_executions');
-  if (executionsSql.includes('workflow_runs_legacy')) {
-    db.exec('ALTER TABLE node_executions RENAME TO node_executions_legacy');
-    db.exec(`
-      CREATE TABLE node_executions (
-        id TEXT PRIMARY KEY,
-        run_id TEXT,
-        node_id TEXT,
-        status TEXT,
-        input_data TEXT,
-        output_data TEXT,
-        tokens_used INTEGER DEFAULT 0,
-        cost_inr REAL DEFAULT 0,
-        duration_ms INTEGER DEFAULT 0,
-        evaluator_score REAL,
-        retry_count INTEGER DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(run_id) REFERENCES workflow_runs(id)
-      )
-    `);
-    db.exec(`
-      INSERT INTO node_executions (
-        id, run_id, node_id, status, input_data, output_data,
-        tokens_used, cost_inr, duration_ms, evaluator_score, retry_count, created_at
-      )
-      SELECT
-        id,
-        run_id,
-        node_id,
-        status,
-        input_data,
-        output_data,
-        COALESCE(tokens_used, 0) AS tokens_used,
-        COALESCE(cost_inr, 0) AS cost_inr,
-        COALESCE(duration_ms, 0) AS duration_ms,
-        evaluator_score,
-        COALESCE(retry_count, 0) AS retry_count,
-        COALESCE(created_at, CURRENT_TIMESTAMP) AS created_at
-      FROM node_executions_legacy
-    `);
-    db.exec('DROP TABLE node_executions_legacy');
-  }
-}
-
-function ensureWorkflowRunColumns() {
-  if (!columnExists('workflow_runs', 'trigger')) {
-    db.exec(`ALTER TABLE workflow_runs ADD COLUMN trigger TEXT DEFAULT 'manual'`);
-  }
-}
-
-function ensureWorkflowColumns() {
-  if (!columnExists('workflows', 'dag')) {
-    db.exec(`ALTER TABLE workflows ADD COLUMN dag TEXT`);
-  }
-  if (!columnExists('workflows', 'updated_at')) {
-    db.exec(`ALTER TABLE workflows ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`);
-  }
-  if (!columnExists('workflows', 'estimated_cost_per_run_inr')) {
-    db.exec(`ALTER TABLE workflows ADD COLUMN estimated_cost_per_run_inr REAL DEFAULT 0`);
-  }
-  if (!columnExists('workflows', 'generation_error')) {
-    db.exec(`ALTER TABLE workflows ADD COLUMN generation_error TEXT`);
-  }
-  if (!columnExists('workflows', 'user_id')) {
-    db.exec(`ALTER TABLE workflows ADD COLUMN user_id TEXT`);
-  }
-}
 
 function parseCookies(cookieHeader?: string): Record<string, string> {
   return (cookieHeader ?? '')
@@ -445,13 +117,61 @@ function getSessionUser(req: express.Request): SessionUser | null {
   };
 }
 
-function ensureUserWorkspace(user: SessionUser) {
-  db.prepare(`INSERT OR IGNORE INTO workspaces (id, name) VALUES (?, ?)`).run(
+function toIsoTimestamp(value: DbTimestamp): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    return typeof value === 'string' ? value : null;
+  }
+  return date.toISOString();
+}
+
+function parseDag(value: WorkflowRow['dag']): GeneratedWorkflowDag | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as GeneratedWorkflowDag;
+    } catch {
+      return null;
+    }
+  }
+  return value as GeneratedWorkflowDag;
+}
+
+function toJsonParam(value: unknown): string | null {
+  return value == null ? null : JSON.stringify(value);
+}
+
+async function ensureDatabaseReady() {
+  await db.exec(DATABASE_SCHEMA_SQL);
+}
+
+async function ensureUserWorkspace(user: SessionUser) {
+  await db.prepare(`
+    INSERT INTO workspaces (id, name)
+    VALUES (?, ?)
+    ON CONFLICT (id) DO NOTHING
+  `).run(
     user.workspaceId,
     `${user.displayName}'s Workspace`,
   );
-  db.prepare(`INSERT OR IGNORE INTO users (id, workspace_id, email, role) VALUES (?, ?, ?, ?)`)
-    .run(user.userId, user.workspaceId, user.email, 'owner');
+
+  await db.prepare(`
+    INSERT INTO users (id, workspace_id, email, name, role, updated_at)
+    VALUES (?, ?, ?, ?, ?, NOW())
+    ON CONFLICT (id) DO UPDATE SET
+      workspace_id = EXCLUDED.workspace_id,
+      email = EXCLUDED.email,
+      name = COALESCE(users.name, EXCLUDED.name),
+      role = COALESCE(users.role, EXCLUDED.role),
+      updated_at = NOW()
+  `).run(
+    user.userId,
+    user.workspaceId,
+    user.email,
+    user.displayName,
+    'owner',
+  );
 }
 
 function getOAuthStateSecret(): string {
@@ -491,12 +211,36 @@ function verifyOAuthState(token: string): Record<string, unknown> | null {
   }
 }
 
-function normalizeProviderFromRoute(provider: string): 'gmail' | 'google_sheets' | null {
+function normalizeProviderFromRoute(provider: string): IntegrationProvider | null {
   const normalized = provider.trim().toLowerCase();
   if (normalized === 'gmail' || normalized === 'google_sheets' || normalized === 'google') {
     return normalized === 'google' ? 'gmail' : normalized;
   }
+  if (normalized === 'slack') return 'slack';
+  if (normalized === 'notion') return 'notion';
   return null;
+}
+
+function isGoogleProvider(provider: string): provider is 'gmail' | 'google_sheets' {
+  return provider === 'gmail' || provider === 'google_sheets';
+}
+
+function isEnvManagedProvider(provider: string): provider is 'slack' | 'notion' {
+  return provider === 'slack' || provider === 'notion';
+}
+
+function getEnvTokenForProvider(provider: string): string | null {
+  if (!isEnvManagedProvider(provider)) return null;
+  const key = ENV_INTEGRATION_CONFIG[provider].tokenEnv;
+  const token = process.env[key]?.trim();
+  return token || null;
+}
+
+function getEnvAccountForProvider(provider: string): string {
+  if (!isEnvManagedProvider(provider)) return 'Configured integration';
+  const config = ENV_INTEGRATION_CONFIG[provider];
+  const explicit = config.accountEnv ? process.env[config.accountEnv]?.trim() : '';
+  return explicit || config.fallbackAccount;
 }
 
 function encodeEmail(to: string[] | string, subject: string, body: string): string {
@@ -527,15 +271,7 @@ function toRecipientList(value: unknown): string[] {
 
 function serializeWorkflowRow(row: WorkflowRow | undefined | null) {
   if (!row) return null;
-
-  let dag: GeneratedWorkflowDag | null = null;
-  if (row.dag) {
-    try {
-      dag = JSON.parse(row.dag) as GeneratedWorkflowDag;
-    } catch {
-      dag = null;
-    }
-  }
+  const dag = parseDag(row.dag);
 
   return {
     id: row.id,
@@ -547,38 +283,43 @@ function serializeWorkflowRow(row: WorkflowRow | undefined | null) {
     dag,
     status: row.status,
     cronSchedule: row.cron_schedule,
-    estimatedCostPerRunInr: row.estimated_cost_per_run_inr ?? 0,
+    estimatedCostPerRunInr: Number(row.estimated_cost_per_run_inr ?? 0),
     generationError: row.generation_error,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at ?? row.created_at,
-    created_at: row.created_at,
-    updated_at: row.updated_at ?? row.created_at,
+    createdAt: toIsoTimestamp(row.created_at),
+    updatedAt: toIsoTimestamp(row.updated_at ?? row.created_at),
+    created_at: toIsoTimestamp(row.created_at),
+    updated_at: toIsoTimestamp(row.updated_at ?? row.created_at),
   };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
 }
 
 function writeSSE(res: express.Response, event: string, data: unknown) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-function getWorkflowById(workflowId: string) {
-  return db.prepare(`SELECT * FROM workflows WHERE id = ?`).get(workflowId) as WorkflowRow | undefined;
+async function getWorkflowById(workflowId: string) {
+  return await db.prepare(`SELECT * FROM workflows WHERE id = ?`).get<WorkflowRow>(workflowId);
 }
 
-function getOwnedWorkflow(workflowId: string, user: SessionUser) {
-  return db.prepare(`SELECT * FROM workflows WHERE id = ? AND user_id = ?`).get(workflowId, user.userId) as WorkflowRow | undefined;
+async function getOwnedWorkflow(workflowId: string, user: SessionUser) {
+  return await db.prepare(`SELECT * FROM workflows WHERE id = ? AND user_id = ?`).get<WorkflowRow>(workflowId, user.userId);
 }
-
-migrateWorkflowsTableIfNeeded();
-repairWorkflowForeignKeyReferences();
-ensureWorkflowColumns();
-ensureWorkflowRunColumns();
-
-// Non-destructive column migration: add account_name to integrations if missing
-try {
-  db.exec(`ALTER TABLE integrations ADD COLUMN account_name TEXT`);
-} catch { /* column already exists */ }
 
 async function startServer() {
+  await ensureDatabaseReady();
+
   const app = express();
   const preferredPort = Number(process.env.PORT) || 3000;
   const host = process.env.HOST || "0.0.0.0";
@@ -587,63 +328,79 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
-  const requireSession = (req: express.Request, res: express.Response) => {
+  const requireSession = async (req: express.Request, res: express.Response) => {
     const user = getSessionUser(req);
     if (!user) {
       res.status(401).json({ error: 'Authentication required.' });
       return null;
     }
-    ensureUserWorkspace(user);
+    await ensureUserWorkspace(user);
     return user;
   };
 
-  const upsertIntegration = (
+  const upsertIntegration = async (
+    userId: string,
     workspaceId: string,
-    provider: 'gmail' | 'google_sheets',
+    provider: IntegrationProvider,
     accessToken: string,
     refreshToken: string | null,
     expiresAt: string | null,
     accountName: string,
   ) => {
-    const existing = db.prepare(`
+    const existing = await db.prepare(`
       SELECT id
       FROM integrations
       WHERE workspace_id = ? AND provider = ?
       LIMIT 1
-    `).get(workspaceId, provider) as { id: string } | undefined;
+    `).get<{ id: string }>(workspaceId, provider);
 
     if (existing) {
-      db.prepare(`
+      await db.prepare(`
         UPDATE integrations
-        SET access_token = ?, refresh_token = ?, expires_at = ?, account_name = ?, enabled = 1, connected_at = CURRENT_TIMESTAMP
+        SET user_id = ?, access_token = ?, refresh_token = ?, expires_at = ?::timestamptz, account_name = ?, enabled = TRUE, connected_at = NOW()
         WHERE id = ?
-      `).run(accessToken, refreshToken, expiresAt, accountName, existing.id);
+      `).run(userId, accessToken, refreshToken, expiresAt, accountName, existing.id);
     } else {
-      db.prepare(`
-        INSERT INTO integrations (id, workspace_id, provider, access_token, refresh_token, account_name, expires_at, enabled, connected_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-      `).run(uuidv4(), workspaceId, provider, accessToken, refreshToken, accountName, expiresAt);
+      await db.prepare(`
+        INSERT INTO integrations (id, user_id, workspace_id, provider, access_token, refresh_token, account_name, expires_at, enabled, connected_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?::timestamptz, TRUE, NOW())
+      `).run(uuidv4(), userId, workspaceId, provider, accessToken, refreshToken, accountName, expiresAt);
     }
   };
 
   const loadIntegrationToken = async (workspaceId: string, provider: string) => {
-    const row = db.prepare(`
+    const row = await db.prepare(`
       SELECT access_token, refresh_token, expires_at
       FROM integrations
-      WHERE workspace_id = ? AND provider = ? AND enabled = 1
+      WHERE workspace_id = ? AND provider = ? AND enabled = TRUE
       ORDER BY connected_at DESC
       LIMIT 1
-    `).get(workspaceId, provider) as
-      | { access_token: string | null; refresh_token: string | null; expires_at: string | null }
-      | undefined;
+    `).get<{ access_token: string | null; refresh_token: string | null; expires_at: DbTimestamp }>(workspaceId, provider);
 
     if (!row?.access_token) return null;
 
     return {
       accessToken: decryptSecret(row.access_token),
       refreshToken: row.refresh_token ? decryptSecret(row.refresh_token) : null,
-      expiresAt: row.expires_at ?? null,
+      expiresAt: toIsoTimestamp(row.expires_at),
     };
+  };
+
+  const resolveIntegrationToken = async (workspaceId: string, provider: string) => {
+    const normalizedProvider = normalizeProviderFromRoute(provider) ?? provider;
+    const dbToken = await loadIntegrationToken(workspaceId, normalizedProvider);
+    if (dbToken) return dbToken;
+
+    const envToken = getEnvTokenForProvider(normalizedProvider);
+    if (envToken) {
+      return {
+        accessToken: envToken,
+        refreshToken: null,
+        expiresAt: null,
+      };
+    }
+
+    return null;
   };
 
   const refreshGoogleToken = async (
@@ -676,9 +433,9 @@ async function startServer() {
       ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
       : null;
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE integrations
-      SET access_token = ?, expires_at = ?
+      SET access_token = ?, expires_at = ?::timestamptz
       WHERE workspace_id = ? AND provider = ?
     `).run(
       encryptSecret(payload.access_token),
@@ -693,7 +450,7 @@ async function startServer() {
     };
   };
 
-  const registerAliases = (aliases: string[], provider: 'gmail' | 'google_sheets', execute: (params: Record<string, any>, accessToken: string) => Promise<any>) => {
+  const registerAliases = (aliases: string[], provider: IntegrationProvider, execute: (params: Record<string, any>, accessToken: string) => Promise<any>) => {
     for (const alias of aliases) {
       registerTool(alias, { provider, execute });
     }
@@ -786,6 +543,162 @@ async function startServer() {
     };
   });
 
+  registerAliases(['send_slack_message', 'slack.send', 'post_slack_message', 'post_message', 'slack.post_message'], 'slack', async (params, accessToken) => {
+    const channel = String(params.channel ?? params.channel_id ?? process.env.SLACK_DEFAULT_CHANNEL ?? '').trim();
+    const fallbackChannel = String(process.env.SLACK_DEFAULT_CHANNEL ?? '').trim();
+    const text = String(params.text ?? params.message ?? '').trim();
+
+    if (!channel) {
+      throw new Error('Slack message requires channel.');
+    }
+    if (!text) {
+      throw new Error('Slack message requires text.');
+    }
+
+    const postSlackMessage = async (targetChannel: string) => {
+      const response = await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          channel: targetChannel,
+          text,
+          unfurl_links: false,
+        }),
+      });
+
+      const payload = await response.json() as {
+        ok?: boolean;
+        error?: string;
+        ts?: string;
+        channel?: string;
+      };
+
+      return { response, payload };
+    };
+
+    let attemptedChannel = channel;
+    let { response, payload } = await postSlackMessage(channel);
+
+    if ((!response.ok || !payload.ok) && payload.error === 'channel_not_found' && fallbackChannel && fallbackChannel !== channel) {
+      attemptedChannel = fallbackChannel;
+      ({ response, payload } = await postSlackMessage(fallbackChannel));
+    }
+
+    if (!response.ok || !payload.ok) {
+      throw new Error(`Slack error: ${payload.error ?? `HTTP ${response.status}`}`);
+    }
+
+    return {
+      messageId: payload.ts ?? null,
+      channel: payload.channel ?? attemptedChannel,
+      status: 'sent',
+    };
+  });
+
+  registerAliases(['create_notion_page', 'notion.create_page', 'notion.create'], 'notion', async (params, accessToken) => {
+    const notionVersion = process.env.NOTION_VERSION?.trim() || '2022-06-28';
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': notionVersion,
+    };
+
+    const title = String(params.title ?? params.name ?? 'Automata Update').trim();
+    const content = String(params.content ?? params.body ?? params.text ?? '').trim();
+    const explicitParentType = String(params.parent_type ?? '').trim().toLowerCase();
+    const pageParentId = String(params.parent_id ?? params.page_id ?? '').trim();
+    const databaseId = String(params.database_id ?? process.env.NOTION_DATABASE_ID ?? '').trim();
+
+    let parent: Record<string, string>;
+    const properties: Record<string, unknown> = {};
+
+    if (databaseId && explicitParentType !== 'page') {
+      let usePageParent = false;
+      let titleProperty = 'Name';
+      const databaseResponse = await fetch(`https://api.notion.com/v1/databases/${encodeURIComponent(databaseId)}`, {
+        method: 'GET',
+        headers,
+      });
+
+      if (databaseResponse.ok) {
+        const databasePayload = await databaseResponse.json() as {
+          properties?: Record<string, { type?: string }>;
+        };
+        for (const [propertyName, definition] of Object.entries(databasePayload.properties ?? {})) {
+          if (definition?.type === 'title') {
+            titleProperty = propertyName;
+            break;
+          }
+        }
+      } else {
+        const databaseError = await databaseResponse.json().catch(() => null) as { message?: string } | null;
+        const message = String(databaseError?.message ?? '').toLowerCase();
+        if (message.includes('is a page') || message.includes('page, not a database')) {
+          usePageParent = true;
+        }
+      }
+
+      if (usePageParent) {
+        parent = { page_id: databaseId };
+        properties.title = {
+          title: [{ type: 'text', text: { content: title } }],
+        };
+      } else {
+        parent = { database_id: databaseId };
+        properties[titleProperty] = {
+          title: [{ type: 'text', text: { content: title } }],
+        };
+      }
+    } else if (pageParentId) {
+      parent = { page_id: pageParentId };
+      properties.title = {
+        title: [{ type: 'text', text: { content: title } }],
+      };
+    } else {
+      throw new Error('Notion page requires parent_id/page_id or NOTION_DATABASE_ID.');
+    }
+
+    const children = content
+      ? [{
+          object: 'block',
+          type: 'paragraph',
+          paragraph: {
+            rich_text: [{ type: 'text', text: { content } }],
+          },
+        }]
+      : [];
+
+    const response = await fetch('https://api.notion.com/v1/pages', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        parent,
+        properties,
+        children,
+      }),
+    });
+
+    const payload = await response.json() as {
+      object?: string;
+      message?: string;
+      id?: string;
+      url?: string;
+    };
+
+    if (!response.ok || payload.object === 'error') {
+      throw new Error(`Notion error: ${payload.message ?? `HTTP ${response.status}`}`);
+    }
+
+    return {
+      pageId: payload.id ?? null,
+      url: payload.url ?? null,
+      status: 'created',
+    };
+  });
+
   const emitWorkflowGenerationEvent = (workflowId: string, event: string, data: unknown) => {
     runEventBus.emit(`workflow:${workflowId}`, { event, data });
   };
@@ -799,7 +712,7 @@ async function startServer() {
     activeWorkflowGenerations.add(workflowId);
 
     try {
-      const workflow = getWorkflowById(workflowId);
+      const workflow = await getWorkflowById(workflowId);
       if (!workflow) throw new Error('Workflow not found.');
       const prompt = workflow.prompt?.trim();
       if (!prompt) throw new Error('Workflow prompt is missing.');
@@ -807,19 +720,24 @@ async function startServer() {
       const hasAnthropicKey = Boolean(process.env.ANTHROPIC_API_KEY?.trim());
       const summaryModel = process.env.WORKFLOW_SUMMARY_MODEL?.trim() || process.env.ANTHROPIC_MODEL?.trim() || 'claude-haiku-4-5';
       const dagModel = process.env.WORKFLOW_DAG_MODEL?.trim() || process.env.ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-20250514';
+      const llmTimeoutMs = Number(process.env.WORKFLOW_LLM_TIMEOUT_MS ?? 45000);
 
       let name = String(workflow.name ?? 'Generated Workflow').trim().slice(0, 80) || 'Generated Workflow';
       let description = String(workflow.description ?? '').trim();
 
       if (hasAnthropicKey) {
         try {
-          const summaryMessage = await requestLlmCompletion({
-            model: summaryModel,
-            maxTokens: 60,
-            temperature: 0,
-            system: 'Extract a short workflow name (max 6 words) and one sentence description from this workflow description. Return only JSON: { "name": string, "description": string }',
-            user: prompt,
-          });
+          const summaryMessage = await withTimeout(
+            requestLlmCompletion({
+              model: summaryModel,
+              maxTokens: 60,
+              temperature: 0,
+              system: 'Extract a short workflow name (max 6 words) and one sentence description from this workflow description. Return only JSON: { "name": string, "description": string }',
+              user: prompt,
+            }),
+            llmTimeoutMs,
+            'Workflow summary generation',
+          );
 
           const summaryText = summaryMessage.text;
           const summary = extractJSONObject(summaryText) as { name?: string; description?: string };
@@ -836,9 +754,9 @@ async function startServer() {
         description = String(fallbackSummary.description ?? description).trim();
       }
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE workflows
-        SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+        SET name = ?, description = ?, updated_at = NOW()
         WHERE id = ?
       `).run(name, description, workflowId);
 
@@ -853,13 +771,17 @@ async function startServer() {
 
       if (hasAnthropicKey) {
         try {
-          const dagResponse = await requestLlmCompletion({
-            model: dagModel,
-            maxTokens: 2000,
-            temperature: 0.2,
-            system: WORKFLOW_DAG_SYSTEM_PROMPT,
-            user: prompt,
-          });
+          const dagResponse = await withTimeout(
+            requestLlmCompletion({
+              model: dagModel,
+              maxTokens: 2000,
+              temperature: 0.2,
+              system: WORKFLOW_DAG_SYSTEM_PROMPT,
+              user: prompt,
+            }),
+            llmTimeoutMs,
+            'Workflow DAG generation',
+          );
 
           const rawDag = dagResponse.text;
           for (let index = 0; index < rawDag.length; index += 160) {
@@ -912,11 +834,11 @@ async function startServer() {
         estimatedCostPerRunInr,
       });
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE workflows
-        SET name = ?, description = ?, dag = ?, status = 'ready', estimated_cost_per_run_inr = ?, generation_error = NULL, updated_at = CURRENT_TIMESTAMP
+        SET name = ?, description = ?, dag = ?::jsonb, status = 'ready', estimated_cost_per_run_inr = ?, generation_error = NULL, updated_at = NOW()
         WHERE id = ?
-      `).run(name, dag.description || description, JSON.stringify(dag), estimatedCostPerRunInr, workflowId);
+      `).run(name, dag.description || description, toJsonParam(dag), estimatedCostPerRunInr, workflowId);
 
       emitWorkflowGenerationEvent(workflowId, 'complete', {
         workflowId,
@@ -929,9 +851,9 @@ async function startServer() {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Workflow generation failed.';
-      db.prepare(`
+      await db.prepare(`
         UPDATE workflows
-        SET status = 'failed', generation_error = ?, updated_at = CURRENT_TIMESTAMP
+        SET status = 'failed', generation_error = ?, updated_at = NOW()
         WHERE id = ?
       `).run(message, workflowId);
       emitWorkflowGenerationEvent(workflowId, 'error', { message });
@@ -948,18 +870,21 @@ async function startServer() {
     const startedAt = Date.now();
 
     try {
-      const workflow = getWorkflowById(workflowId);
+      const workflow = await getWorkflowById(workflowId);
       if (!workflow) throw new Error('Workflow not found.');
-      const dag = workflow.dag ? (JSON.parse(workflow.dag) as GeneratedWorkflowDag) : { nodes: [], edges: [] };
+      const dag = parseDag(workflow.dag) ?? { nodes: [], edges: [] };
       const workspaceId = workflow.workspace_id ?? `workspace:${workflow.user_id ?? 'anonymous'}`;
 
       const result = await executeWorkflow(dag, runId, {
         shouldStop: () => cancelledRuns.has(runId),
         resolveIntegration: async (provider: string) => {
-          return loadIntegrationToken(workspaceId, provider);
+          return resolveIntegrationToken(workspaceId, provider);
         },
         refreshIntegrationToken: async (provider: string, refreshToken: string) => {
-          const normalizedProvider = provider === 'google_sheets' ? 'google_sheets' : 'gmail';
+          const normalizedProvider = normalizeProviderFromRoute(provider);
+          if (!normalizedProvider || !isGoogleProvider(normalizedProvider)) {
+            throw new Error(`Token refresh is not supported for provider: ${provider}`);
+          }
           return refreshGoogleToken(workspaceId, normalizedProvider, refreshToken);
         },
         onNodeUpdate: async (event: NodeExecutionEvent) => {
@@ -968,31 +893,47 @@ async function startServer() {
           nodeExecutionIds.set(event.nodeId, executionId);
 
           if (event.status === 'running' || !hasExecutionRow) {
-            db.prepare(`
-              INSERT OR REPLACE INTO node_executions (
-                id, run_id, node_id, status, input_data, output_data,
+            await db.prepare(`
+              INSERT INTO node_executions (
+                id, run_id, node_id, node_label, node_type, status, input_data, output_data,
                 tokens_used, cost_inr, duration_ms, evaluator_score
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?)
+              ON CONFLICT (id) DO UPDATE SET
+                run_id = EXCLUDED.run_id,
+                node_id = EXCLUDED.node_id,
+                node_label = EXCLUDED.node_label,
+                node_type = EXCLUDED.node_type,
+                status = EXCLUDED.status,
+                input_data = EXCLUDED.input_data,
+                output_data = EXCLUDED.output_data,
+                tokens_used = EXCLUDED.tokens_used,
+                cost_inr = EXCLUDED.cost_inr,
+                duration_ms = EXCLUDED.duration_ms,
+                evaluator_score = EXCLUDED.evaluator_score
             `).run(
               executionId,
               runId,
               event.nodeId,
+              event.nodeLabel,
+              event.nodeType,
               event.status,
               null,
-              event.output ? JSON.stringify(event.output) : null,
+              toJsonParam(event.output),
               event.tokensUsed,
               event.costInr,
               event.durationMs,
               event.evaluatorScore ?? null,
             );
           } else {
-            db.prepare(`
+            await db.prepare(`
               UPDATE node_executions
-              SET status = ?, output_data = ?, tokens_used = ?, cost_inr = ?, duration_ms = ?, evaluator_score = ?
+              SET node_label = ?, node_type = ?, status = ?, output_data = ?::jsonb, tokens_used = ?, cost_inr = ?, duration_ms = ?, evaluator_score = ?
               WHERE id = ?
             `).run(
+              event.nodeLabel,
+              event.nodeType,
               event.status,
-              event.output ? JSON.stringify(event.output) : null,
+              toJsonParam(event.output),
               event.tokensUsed,
               event.costInr,
               event.durationMs,
@@ -1001,17 +942,17 @@ async function startServer() {
             );
           }
 
-          const totals = db.prepare(`
+          const totals = await db.prepare(`
             SELECT COALESCE(SUM(tokens_used), 0) AS totalTokens, COALESCE(SUM(cost_inr), 0) AS totalCostInr
             FROM node_executions
             WHERE run_id = ?
-          `).get(runId) as { totalTokens: number; totalCostInr: number };
+          `).get<{ totaltokens: number | string; totalcostinr: number | string }>(runId);
 
-          db.prepare(`
+          await db.prepare(`
             UPDATE workflow_runs
             SET total_tokens = ?, total_cost_inr = ?
             WHERE id = ?
-          `).run(totals.totalTokens, totals.totalCostInr, runId);
+          `).run(Number(totals?.totaltokens ?? 0), Number(totals?.totalcostinr ?? 0), runId);
 
           emitRunEvent(runId, 'node_update', {
             nodeId: event.nodeId,
@@ -1019,6 +960,9 @@ async function startServer() {
             nodeType: event.nodeType,
             status: event.status,
             outputPreview: event.outputPreview,
+            skipReason: event.status === 'skipped'
+              ? String((event.output as { reason?: unknown } | null)?.reason ?? event.outputPreview ?? 'Skipped')
+              : null,
             tokensUsed: event.tokensUsed,
             costInr: event.costInr,
             durationMs: event.durationMs,
@@ -1033,9 +977,9 @@ async function startServer() {
         ? 'failed'
         : (result.status === 'completed' ? 'completed' : 'failed');
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE workflow_runs
-        SET status = ?, ended_at = CURRENT_TIMESTAMP, total_tokens = ?, total_cost_inr = ?
+        SET status = ?, ended_at = NOW(), total_tokens = ?, total_cost_inr = ?
         WHERE id = ?
       `).run(finalStatus, result.totalTokens, result.totalCostInr, runId);
 
@@ -1049,9 +993,9 @@ async function startServer() {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Run failed.';
-      db.prepare(`
+      await db.prepare(`
         UPDATE workflow_runs
-        SET status = 'failed', ended_at = CURRENT_TIMESTAMP
+        SET status = 'failed', ended_at = NOW()
         WHERE id = ?
       `).run(runId);
 
@@ -1070,35 +1014,41 @@ async function startServer() {
   };
 
   // API Routes
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", db: "sqlite_ready" });
+  app.get("/api/health", async (req, res) => {
+    try {
+      await db.queryOne('SELECT 1 AS ok');
+      res.json({ status: "ok", db: "postgres_ready" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Database unavailable';
+      res.status(500).json({ status: 'error', db: 'postgres_unavailable', error: message });
+    }
   });
 
   // Workflow CRUDS
-  app.get("/api/workflows", (req, res) => {
-    const user = requireSession(req, res);
+  app.get("/api/workflows", async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
-    const workflows = db.prepare(`
+    const workflows = await db.prepare(`
       SELECT * FROM workflows
       WHERE user_id = ?
       ORDER BY created_at DESC
-    `).all(user.userId) as WorkflowRow[];
+    `).all<WorkflowRow>(user.userId);
 
     res.json({ workflows: workflows.map(serializeWorkflowRow) });
   });
 
-  app.post("/api/workflows", (req, res) => {
-    const user = requireSession(req, res);
+  app.post("/api/workflows", async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
     const { name, description, status, dag, prompt, estimatedCostPerRunInr } = req.body;
     const id = uuidv4();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO workflows (
         id, user_id, workspace_id, name, description, prompt, dag, status, estimated_cost_per_run_inr, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, NOW(), NOW())
     `).run(
       id,
       user.userId,
@@ -1106,18 +1056,18 @@ async function startServer() {
       name,
       description ?? '',
       prompt ?? null,
-      dag ? JSON.stringify(dag) : null,
+      toJsonParam(dag),
       status || 'draft',
       estimatedCostPerRunInr ?? 0,
     );
-    res.status(201).json({ workflow: serializeWorkflowRow(getWorkflowById(id)) });
+    res.status(201).json({ workflow: serializeWorkflowRow(await getWorkflowById(id)) });
   });
 
-  app.get("/api/workflows/:id", (req, res) => {
-    const user = requireSession(req, res);
+  app.get("/api/workflows/:id", async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
-    const workflow = getOwnedWorkflow(req.params.id, user);
+    const workflow = await getOwnedWorkflow(req.params.id, user);
     if (!workflow) {
       return res.status(404).json({ error: 'Workflow not found.' });
     }
@@ -1125,46 +1075,46 @@ async function startServer() {
     res.json({ workflow: serializeWorkflowRow(workflow) });
   });
 
-  app.patch("/api/workflows/:id", (req, res) => {
-    const user = requireSession(req, res);
+  app.patch("/api/workflows/:id", async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
-    const workflow = getOwnedWorkflow(req.params.id, user);
+    const workflow = await getOwnedWorkflow(req.params.id, user);
     if (!workflow) {
       return res.status(404).json({ error: 'Workflow not found.' });
     }
 
     const { name, status, description } = req.body;
-    db.prepare(`
+    await db.prepare(`
       UPDATE workflows
       SET name = COALESCE(?, name),
           status = COALESCE(?, status),
           description = COALESCE(?, description),
-          updated_at = CURRENT_TIMESTAMP
+          updated_at = NOW()
       WHERE id = ?
     `).run(name ?? null, status ?? null, description ?? null, req.params.id);
-    res.json({ workflow: serializeWorkflowRow(getWorkflowById(req.params.id)) });
+    res.json({ workflow: serializeWorkflowRow(await getWorkflowById(req.params.id)) });
   });
 
-  app.delete("/api/workflows/:id", (req, res) => {
-    const user = requireSession(req, res);
+  app.delete("/api/workflows/:id", async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
-    const workflow = getOwnedWorkflow(req.params.id, user);
+    const workflow = await getOwnedWorkflow(req.params.id, user);
     if (!workflow) {
       return res.status(404).json({ error: 'Workflow not found.' });
     }
 
-    db.prepare(`DELETE FROM node_executions WHERE run_id IN (SELECT id FROM workflow_runs WHERE workflow_id = ?)`)
+    await db.prepare(`DELETE FROM node_executions WHERE run_id IN (SELECT id FROM workflow_runs WHERE workflow_id = ?)`)
       .run(req.params.id);
-    db.prepare(`DELETE FROM workflow_runs WHERE workflow_id = ?`).run(req.params.id);
-    db.prepare("DELETE FROM workflows WHERE id = ?").run(req.params.id);
+    await db.prepare(`DELETE FROM workflow_runs WHERE workflow_id = ?`).run(req.params.id);
+    await db.prepare("DELETE FROM workflows WHERE id = ?").run(req.params.id);
     res.json({ success: true });
   });
 
   // ── Workflow Generation via Claude ─────────────────────────────────────
   app.post("/api/workflows/generate", async (req, res) => {
-    const user = requireSession(req, res);
+    const user = await requireSession(req, res);
     if (!user) return;
 
     const { prompt } = req.body as { prompt?: string };
@@ -1178,11 +1128,11 @@ async function startServer() {
     }
 
     const workflowId = uuidv4();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO workflows (
         id, user_id, workspace_id, name, description, prompt, dag, status,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?, NOW(), NOW())
     `).run(
       workflowId,
       user.userId,
@@ -1194,14 +1144,18 @@ async function startServer() {
       'generating',
     );
 
+    setImmediate(() => {
+      void runWorkflowGeneration(workflowId);
+    });
+
     return res.status(201).json({ workflowId, status: 'generating' });
   });
 
-  app.get('/api/workflows/:id/stream', (req, res) => {
-    const user = requireSession(req, res);
+  app.get('/api/workflows/:id/stream', async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
-    const workflow = getOwnedWorkflow(req.params.id, user);
+    const workflow = await getOwnedWorkflow(req.params.id, user);
     if (!workflow) {
       return res.status(403).json({ error: 'Forbidden.' });
     }
@@ -1265,11 +1219,11 @@ async function startServer() {
     }
   });
 
-  app.post('/api/workflows/:id/runs', (req, res) => {
-    const user = requireSession(req, res);
+  app.post('/api/workflows/:id/runs', async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
-    const workflow = getOwnedWorkflow(req.params.id, user);
+    const workflow = await getOwnedWorkflow(req.params.id, user);
     if (!workflow) {
       return res.status(404).json({ error: 'Workflow not found.' });
     }
@@ -1280,18 +1234,18 @@ async function startServer() {
       return res.status(409).json({ error: 'Workflow must be ready or active before it can run.' });
     }
 
-    const activeRun = db.prepare(`
+    const activeRun = await db.prepare(`
       SELECT id FROM workflow_runs WHERE workflow_id = ? AND status = 'running' LIMIT 1
-    `).get(workflow.id) as { id: string } | undefined;
+    `).get<{ id: string }>(workflow.id);
     if (activeRun) {
       return res.status(409).json({ error: 'A run is already in progress' });
     }
 
     const runId = uuidv4();
     const trigger = req.body?.trigger === 'cron' ? 'cron' : 'manual';
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO workflow_runs (id, workflow_id, status, trigger, started_at, total_tokens, total_cost_inr)
-      VALUES (?, ?, 'running', ?, CURRENT_TIMESTAMP, 0, 0)
+      VALUES (?, ?, 'running', ?, NOW(), 0, 0)
     `).run(runId, workflow.id, trigger);
 
     res.status(201).json({ runId });
@@ -1300,11 +1254,11 @@ async function startServer() {
     });
   });
 
-  app.get('/api/runs/:runId/stream', (req, res) => {
-    const user = requireSession(req, res);
+  app.get('/api/runs/:runId/stream', async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
-    const run = db.prepare(`
+    const run = await db.prepare(`
       SELECT wr.*, w.user_id
       FROM workflow_runs wr
       INNER JOIN workflows w ON w.id = wr.workflow_id
@@ -1327,9 +1281,9 @@ async function startServer() {
       writeSSE(res, 'run_complete', {
         runId: run.id,
         status: run.status,
-        totalTokens: run.total_tokens,
-        totalCostInr: run.total_cost_inr,
-        durationMs: run.ended_at ? (new Date(run.ended_at).getTime() - new Date(run.started_at).getTime()) : 0,
+        totalTokens: Number(run.total_tokens ?? 0),
+        totalCostInr: Number(run.total_cost_inr ?? 0),
+        durationMs: run.ended_at ? (new Date(String(run.ended_at)).getTime() - new Date(String(run.started_at)).getTime()) : 0,
       });
       return res.end();
     }
@@ -1359,16 +1313,16 @@ async function startServer() {
     });
   });
 
-  app.delete('/api/runs/:runId', (req, res) => {
-    const user = requireSession(req, res);
+  app.delete('/api/runs/:runId', async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
-    const run = db.prepare(`
+    const run = await db.prepare(`
       SELECT wr.id
       FROM workflow_runs wr
       INNER JOIN workflows w ON w.id = wr.workflow_id
       WHERE wr.id = ? AND w.user_id = ? AND wr.status = 'running'
-    `).get(req.params.runId, user.userId) as { id: string } | undefined;
+    `).get<{ id: string }>(req.params.runId, user.userId);
 
     if (!run) {
       return res.status(404).json({ error: 'Run not found or already finished.' });
@@ -1431,31 +1385,59 @@ async function startServer() {
   });
 
   // Integrations
-  app.get("/api/integrations", (req, res) => {
-    const user = requireSession(req, res);
+  app.get("/api/integrations", async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
     try {
-      const rows = db.prepare(`
+      const rows = await db.prepare(`
         SELECT provider, account_name as account, connected_at
         FROM integrations
-        WHERE workspace_id = ? AND enabled = 1
+        WHERE workspace_id = ? AND enabled = TRUE
         ORDER BY connected_at DESC
-      `).all(user.workspaceId);
-      res.json(rows);
+      `).all<IntegrationRow>(user.workspaceId);
+
+      const responseRows: IntegrationRow[] = rows.map((row) => ({
+        ...row,
+        source: 'oauth',
+      }));
+      const seenProviders = new Set(responseRows.map((row) => row.provider));
+
+      (Object.keys(ENV_INTEGRATION_CONFIG) as Array<keyof typeof ENV_INTEGRATION_CONFIG>).forEach((provider) => {
+        if (seenProviders.has(provider)) return;
+        const token = getEnvTokenForProvider(provider);
+        if (!token) return;
+        responseRows.push({
+          provider,
+          account: getEnvAccountForProvider(provider),
+          connected_at: new Date().toISOString(),
+          source: 'env',
+        });
+      });
+
+      res.json(responseRows);
     } catch {
       res.json([]);
     }
   });
 
-  app.get('/api/integrations/connect/:provider', (req, res) => {
-    const user = requireSession(req, res);
+  app.get('/api/integrations/connect/:provider', async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
     const provider = normalizeProviderFromRoute(req.params.provider);
-    if (!provider || (provider !== 'gmail' && provider !== 'google_sheets')) {
+    if (!provider) {
       return res.status(400).json({ error: 'Unsupported integration provider.' });
     }
+
+    if (isEnvManagedProvider(provider)) {
+      if (getEnvTokenForProvider(provider)) {
+        return res.redirect(`/settings/integrations?connected=${provider}`);
+      }
+      const envVar = ENV_INTEGRATION_CONFIG[provider].tokenEnv;
+      return res.status(400).json({ error: `${provider} is environment-managed. Set ${envVar} in .env and restart the server.` });
+    }
+
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REDIRECT_URI) {
       return res.status(500).json({ error: 'Google OAuth is not configured.' });
     }
@@ -1552,7 +1534,8 @@ async function startServer() {
       const encryptedAccessToken = encryptSecret(tokenData.access_token);
       const encryptedRefreshToken = tokenData.refresh_token ? encryptSecret(tokenData.refresh_token) : null;
 
-      upsertIntegration(
+      await upsertIntegration(
+        userId,
         workspaceId,
         'gmail',
         encryptedAccessToken,
@@ -1561,7 +1544,8 @@ async function startServer() {
         accountName,
       );
 
-      upsertIntegration(
+      await upsertIntegration(
+        userId,
         workspaceId,
         'google_sheets',
         encryptedAccessToken,
@@ -1577,14 +1561,30 @@ async function startServer() {
     }
   });
 
-  app.delete("/api/integrations/:provider", (req, res) => {
-    const user = requireSession(req, res);
+  app.delete("/api/integrations/:provider", async (req, res) => {
+    const user = await requireSession(req, res);
     if (!user) return;
 
+    const provider = normalizeProviderFromRoute(req.params.provider);
+    if (!provider) {
+      return res.status(400).json({ error: 'Unsupported integration provider.' });
+    }
+
+    if (isEnvManagedProvider(provider) && getEnvTokenForProvider(provider)) {
+      return res.status(409).json({
+        error: `${provider} is managed via environment variables and cannot be disconnected from UI.`,
+      });
+    }
+
     try {
-      db.prepare("DELETE FROM integrations WHERE workspace_id = ? AND provider = ?")
-        .run(user.workspaceId, req.params.provider);
+      await db.prepare("DELETE FROM integrations WHERE workspace_id = ? AND provider = ?")
+        .run(user.workspaceId, provider);
     } catch { /* table may not exist yet */ }
+    res.json({ success: true });
+  });
+
+  app.post('/api/auth/signout', (req, res) => {
+    res.setHeader('Set-Cookie', 'automata_session=; Path=/; Max-Age=0; SameSite=Lax');
     res.json({ success: true });
   });
 
@@ -1613,44 +1613,44 @@ async function startServer() {
   });
 
   // User preferences
-  app.get("/api/users/preferences", (req, res) => {
+  app.get("/api/users/preferences", async (req, res) => {
     const userId = (req.headers['x-user-id'] as string) || 'default';
-    let prefs: any = db.prepare("SELECT * FROM user_preferences WHERE user_id = ?").get(userId);
+    let prefs = await db.prepare("SELECT * FROM user_preferences WHERE user_id = ?").get<{ sidebar_open: boolean | null; theme: string | null }>(userId);
     if (!prefs) {
-      prefs = { sidebar_open: 0, theme: 'system' };
+      prefs = { sidebar_open: false, theme: 'system' };
     }
     res.json({ sidebarOpen: Boolean(prefs.sidebar_open), theme: prefs.theme ?? 'system' });
   });
 
-  app.patch("/api/users/preferences", (req, res) => {
+  app.patch("/api/users/preferences", async (req, res) => {
     const userId = (req.headers['x-user-id'] as string) || 'default';
     const { sidebarOpen, theme } = req.body as { sidebarOpen?: boolean; theme?: string };
-    const existing = db.prepare("SELECT id FROM user_preferences WHERE user_id = ?").get(userId);
+    const existing = await db.prepare("SELECT id FROM user_preferences WHERE user_id = ?").get<{ id: string }>(userId);
     if (existing) {
-      db.prepare("UPDATE user_preferences SET sidebar_open = COALESCE(?, sidebar_open), theme = COALESCE(?, theme), updated_at = CURRENT_TIMESTAMP WHERE user_id = ?")
+      await db.prepare("UPDATE user_preferences SET sidebar_open = COALESCE(?, sidebar_open), theme = COALESCE(?, theme), updated_at = NOW() WHERE user_id = ?")
         .run(sidebarOpen !== undefined ? (sidebarOpen ? 1 : 0) : null, theme ?? null, userId);
     } else {
-      db.prepare("INSERT INTO user_preferences (id, user_id, sidebar_open, theme) VALUES (?, ?, ?, ?)")
+      await db.prepare("INSERT INTO user_preferences (id, user_id, sidebar_open, theme, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())")
         .run(uuidv4(), userId, sidebarOpen ? 1 : 0, theme ?? 'system');
     }
     res.json({ success: true });
   });
 
   // Terminal messages persistence
-  app.get("/api/terminal/messages", (req, res) => {
+  app.get("/api/terminal/messages", async (req, res) => {
     const sessionId = req.query.sessionId as string;
     if (!sessionId) return res.json({ messages: [] });
-    const rows = db.prepare(
+    const rows = await db.prepare(
       "SELECT id, role, content, tokens_used, cost_inr, created_at FROM terminal_messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 100"
     ).all(sessionId);
     res.json({ messages: rows });
   });
 
-  app.post("/api/terminal/messages", (req, res) => {
+  app.post("/api/terminal/messages", async (req, res) => {
     const { sessionId, role, content, tokensUsed, costInr, userId } = req.body as any;
     if (!sessionId || !role || !content) return res.status(400).json({ error: "sessionId, role, content required." });
     const id = uuidv4();
-    db.prepare(
+    await db.prepare(
       "INSERT INTO terminal_messages (id, user_id, session_id, role, content, tokens_used, cost_inr) VALUES (?, ?, ?, ?, ?, ?, ?)"
     ).run(id, userId ?? 'anonymous', sessionId, role, content, tokensUsed ?? 0, costInr ?? 0);
     res.json({ id });
@@ -1660,36 +1660,36 @@ async function startServer() {
   app.post("/api/workflows/execute", async (req, res) => {
     const { workflowId } = req.body as { workflowId?: string };
     if (!workflowId) return res.status(400).json({ error: "workflowId required." });
-    const workflow: any = db.prepare("SELECT * FROM workflows WHERE id = ?").get(workflowId);
+    const workflow = await db.prepare("SELECT * FROM workflows WHERE id = ?").get<WorkflowRow>(workflowId);
     if (!workflow) return res.status(404).json({ error: "Workflow not found." });
 
     const runId = uuidv4();
-    db.prepare(
+    await db.prepare(
       "INSERT INTO workflow_runs (id, workflow_id, status) VALUES (?, ?, ?)"
     ).run(runId, workflowId, 'running');
 
     try {
       const { executeWorkflow } = await import('./src/lib/workflowExecutor.js');
-      let dag: any = { nodes: [], edges: [] };
-      if (workflow.dag) {
-        try { dag = JSON.parse(workflow.dag); } catch { /* use empty dag */ }
-      }
+      const dag = parseDag(workflow.dag) ?? { nodes: [], edges: [] };
       const workspaceId = workflow.workspace_id ?? `workspace:${workflow.user_id ?? 'anonymous'}`;
       const result = await executeWorkflow(dag, runId, {
         resolveIntegration: async (provider: string) => {
-          return loadIntegrationToken(workspaceId, provider);
+          return resolveIntegrationToken(workspaceId, provider);
         },
         refreshIntegrationToken: async (provider: string, refreshToken: string) => {
-          const normalizedProvider = provider === 'google_sheets' ? 'google_sheets' : 'gmail';
+          const normalizedProvider = normalizeProviderFromRoute(provider);
+          if (!normalizedProvider || !isGoogleProvider(normalizedProvider)) {
+            throw new Error(`Token refresh is not supported for provider: ${provider}`);
+          }
           return refreshGoogleToken(workspaceId, normalizedProvider, refreshToken);
         },
       });
-      db.prepare(
-        "UPDATE workflow_runs SET status = ?, ended_at = CURRENT_TIMESTAMP, total_tokens = ?, total_cost_inr = ? WHERE id = ?"
+      await db.prepare(
+        "UPDATE workflow_runs SET status = ?, ended_at = NOW(), total_tokens = ?, total_cost_inr = ? WHERE id = ?"
       ).run(result.status, result.totalTokens, result.totalCostInr, runId);
       res.json({ runId, status: result.status, totalTokens: result.totalTokens, totalCostInr: result.totalCostInr });
     } catch (err: any) {
-      db.prepare("UPDATE workflow_runs SET status = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?").run('failed', runId);
+      await db.prepare("UPDATE workflow_runs SET status = ?, ended_at = NOW() WHERE id = ?").run('failed', runId);
       res.status(500).json({ error: err.message ?? 'Execution failed.' });
     }
   });

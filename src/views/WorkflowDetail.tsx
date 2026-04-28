@@ -80,6 +80,7 @@ interface RunLog {
   nodeLabel: string;
   status: RunNodeStatus;
   outputPreview?: string;
+  skipReason?: string | null;
   tokensUsed: number;
   costInr: number;
   durationMs: number;
@@ -149,6 +150,23 @@ function humanizeCron(cron: string | undefined | null) {
   return cron;
 }
 
+function normalizeIntegrationName(value: string | null | undefined): string {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized.includes('gmail')) return 'gmail';
+  if (normalized.includes('slack')) return 'slack';
+  if (normalized.includes('notion')) return 'notion';
+  if (
+    normalized.includes('google_sheets') ||
+    normalized.includes('google sheets') ||
+    normalized.includes('sheets') ||
+    normalized === 'google'
+  ) {
+    return 'google_sheets';
+  }
+  return normalized;
+}
+
 function buildCostBreakdown(dag: WorkflowDag | null) {
   const breakdown = (dag?.nodes ?? [])
     .filter((node) => node.type === 'llm_call' || node.type === 'evaluator')
@@ -183,9 +201,7 @@ function stepState(
   generatingPhase: string,
   streamedTokens: string,
   estimatedCost: number | null,
-  isCompleting: boolean,
 ) {
-  if (isCompleting) return 'complete';
   if (stepKey === 'understanding') {
     if (generatingPhase === 'named' || streamedTokens || generatingPhase === 'validated' || generatingPhase === 'costed') return 'complete';
     return generatingPhase ? 'active' : 'active';
@@ -229,12 +245,12 @@ function WorkflowDetailInner() {
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
   const [runCostSoFar, setRunCostSoFar] = useState(0);
   const [selectedNode, setSelectedNode] = useState<WorkflowNode | null>(null);
-  const [isCompleting, setIsCompleting] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
   const [connectedIntegrations, setConnectedIntegrations] = useState<Array<{ provider: string; account?: string }>>([]);
+  const [activationWarning, setActivationWarning] = useState<string | null>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
@@ -351,12 +367,8 @@ function WorkflowDetailInner() {
         status: 'ready',
         estimatedCostPerRunInr: data.estimatedCostPerRunInr,
       } : current);
-      setIsCompleting(true);
-      window.setTimeout(() => {
-        setPhase('ready');
-        setIsCompleting(false);
-      }, 800);
       source.close();
+      setPhase('ready');
     });
 
     source.addEventListener('error', (event) => {
@@ -397,6 +409,14 @@ function WorkflowDetailInner() {
     () => Array.from(new Set((dag?.nodes ?? []).filter((node) => node.type === 'tool_call').map((node) => String(node.config?.mcp_server ?? '')))).filter(Boolean),
     [dag],
   );
+  const connectedIntegrationKeys = useMemo(
+    () => new Set(connectedIntegrations.map((item) => normalizeIntegrationName(item.provider))),
+    [connectedIntegrations],
+  );
+  const missingRequiredIntegrations = useMemo(
+    () => integrationsNeeded.filter((integration) => !connectedIntegrationKeys.has(normalizeIntegrationName(integration))),
+    [connectedIntegrationKeys, integrationsNeeded],
+  );
   const costSummary = useMemo(() => buildCostBreakdown(dag), [dag]);
   const completedNodeCount = runLogs.filter((log) => ['passed', 'failed', 'skipped'].includes(log.status)).length;
   const progressPercent = dag?.nodes?.length ? Math.round((completedNodeCount / dag.nodes.length) * 100) : 0;
@@ -418,6 +438,14 @@ function WorkflowDetailInner() {
 
   const handleActivate = async () => {
     if (!workflow) return;
+
+    if (missingRequiredIntegrations.length > 0) {
+      const list = missingRequiredIntegrations.join(', ');
+      setActivationWarning(`Connect ${list} in Settings before activating this workflow.`);
+      return;
+    }
+
+    setActivationWarning(null);
     const response = await fetch(`/api/workflows/${workflow.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -526,8 +554,8 @@ function WorkflowDetailInner() {
 
   if (phase === 'loading') {
     return (
-      <div className="min-h-screen bg-[#0d0f12] text-white flex items-center justify-center px-4">
-        <div className="flex items-center gap-3 text-white/70 font-mono text-sm">
+      <div className="min-h-screen bg-blueprint-bg flex items-center justify-center px-4">
+        <div className="flex items-center gap-3 text-blueprint-muted font-mono text-sm">
           <Loader2 size={16} className="animate-spin" /> Loading workflow...
         </div>
       </div>
@@ -536,12 +564,12 @@ function WorkflowDetailInner() {
 
   if (phase === 'error') {
     return (
-      <div className="min-h-screen bg-[#0d0f12] text-white flex items-center justify-center px-4">
-        <div className="max-w-lg rounded-3xl border border-white/10 bg-white/5 p-8 text-center space-y-4">
-          <AlertTriangle size={28} className="mx-auto text-red-400" />
-          <h1 className="font-serif text-4xl">Workflow unavailable</h1>
-          <p className="text-white/60">{generationError || 'The workflow could not be loaded or generation failed. You can return to the workflow list and try again.'}</p>
-          <button onClick={() => navigate('/workflows')} className="inline-flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black">
+      <div className="min-h-screen bg-blueprint-bg flex items-center justify-center px-4">
+        <div className="max-w-lg rounded-3xl border border-blueprint-line bg-white p-8 text-center space-y-4 shadow-sm">
+          <AlertTriangle size={28} className="mx-auto text-red-500" />
+          <h1 className="font-serif text-4xl text-blueprint-accent">Workflow unavailable</h1>
+          <p className="text-blueprint-muted">{generationError || 'The workflow could not be loaded or generation failed. You can return to the workflow list and try again.'}</p>
+          <button onClick={() => navigate('/workflows')} className="inline-flex items-center gap-2 rounded-full bg-black px-5 py-2.5 text-sm font-semibold text-white">
             <ArrowLeft size={14} /> Back to workflows
           </button>
         </div>
@@ -550,32 +578,31 @@ function WorkflowDetailInner() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0d0f12] text-white">
+    <div className="min-h-full bg-blueprint-bg">
       <AnimatePresence mode="wait">
         {phase === 'generating' ? (
           <motion.section
             key="generating"
             initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: isCompleting ? 0 : 1, y: isCompleting ? -20 : 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            transition={{ duration: 0.35 }}
-            className="min-h-screen flex items-center justify-center px-4 sm:px-6 lg:px-8"
-            style={{ viewTransitionName: 'workflow-card' }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -16 }}
+            transition={{ duration: 0.3 }}
+            className="min-h-screen bg-blueprint-bg flex items-center justify-center px-4 sm:px-6 lg:px-8"
           >
-            <div className="w-full max-w-3xl rounded-[32px] border border-white/10 bg-[#111318] shadow-[0_30px_80px_rgba(0,0,0,0.45)] p-6 sm:p-8 lg:p-10">
-              <button onClick={() => navigate('/workflows')} className="mb-8 inline-flex items-center gap-2 text-sm text-white/50 hover:text-white transition-colors">
+            <div className="w-full max-w-3xl rounded-[32px] border border-blueprint-line bg-white shadow-[0_22px_60px_rgba(0,0,0,0.08)] p-6 sm:p-8 lg:p-10">
+              <button onClick={() => navigate('/workflows')} className="mb-8 inline-flex items-center gap-2 text-sm text-blueprint-muted hover:text-blueprint-accent transition-colors">
                 <ArrowLeft size={14} /> Back to workflows
               </button>
 
               <div className="space-y-2 text-center sm:text-left mb-10">
-                <p className="font-mono text-xs uppercase tracking-[0.2em] text-white/35">Workflow Generation</p>
-                <h1 className="font-serif text-4xl sm:text-5xl leading-tight">{workflow?.name || 'Generating...'}</h1>
-                <p className="text-white/50 max-w-2xl">We are translating your plain-English request into a production-ready workflow graph.</p>
+                <p className="font-mono text-xs uppercase tracking-[0.2em] text-blueprint-muted">Workflow Generation</p>
+                <h1 className="font-serif text-4xl sm:text-5xl leading-tight text-blueprint-accent">{workflow?.name || 'Generating...'}</h1>
+                <p className="text-blueprint-muted max-w-2xl">We are translating your plain-English request into a production-ready workflow graph.</p>
               </div>
 
               <div className="space-y-4">
                 {GENERATION_STEPS.map((step, index) => {
-                  const state = stepState(step.key, generatingPhase, streamedTokens, estimatedCost, isCompleting);
+                  const state = stepState(step.key, generatingPhase, streamedTokens, estimatedCost);
                   return (
                     <motion.div
                       key={step.key}
@@ -584,35 +611,35 @@ function WorkflowDetailInner() {
                       transition={{ duration: 0.25, delay: index * 0.15 }}
                       className={cn(
                         'rounded-2xl border px-4 sm:px-5 py-4 transition-all',
-                        state === 'complete' && 'border-green-500/40 bg-green-500/8',
-                        state === 'active' && 'border-blue-500/50 bg-blue-500/10',
-                        state === 'inactive' && 'border-white/10 bg-white/[0.03] text-white/50',
+                        state === 'complete' && 'border-green-500/30 bg-green-50',
+                        state === 'active' && 'border-blue-500/30 bg-blue-50',
+                        state === 'inactive' && 'border-blueprint-line bg-blueprint-bg',
                       )}
                       style={stepDelayStyle(index)}
                     >
                       <div className="flex items-start gap-4">
                         <div className="mt-0.5">
                           {state === 'complete' ? (
-                            <CheckCircle2 size={18} className="text-green-400" />
+                            <CheckCircle2 size={18} className="text-green-600" />
                           ) : state === 'active' ? (
-                            <Loader2 size={18} className="text-blue-400 animate-spin" />
+                            <Loader2 size={18} className="text-blue-500 animate-spin" />
                           ) : (
-                            <span className="block h-4 w-4 rounded-full border border-white/20 bg-white/5" />
+                            <span className="block h-4 w-4 rounded-full border border-blueprint-line bg-blueprint-bg" />
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-3">
-                            <p className={cn('font-medium', state === 'complete' && 'text-green-300', state === 'active' && 'text-white', state === 'inactive' && 'text-white/55')}>
+                            <p className={cn('font-medium', state === 'complete' && 'text-green-700', state === 'active' && 'text-blueprint-accent', state === 'inactive' && 'text-blueprint-muted')}>
                               {step.label}
                             </p>
                             {step.key === 'costed' && estimatedCost != null && (
-                              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-3 py-1 text-xs text-green-300">
+                              <span className="rounded-full border border-green-500/30 bg-green-50 px-3 py-1 text-xs text-green-700">
                                 ~{formatCurrency(estimatedCost)} per run
                               </span>
                             )}
                           </div>
                           {step.key === 'building' && streamedTokens.length > 0 && (
-                            <div ref={tokenBoxRef} className="mt-3 max-h-28 overflow-y-auto rounded-xl border border-white/8 bg-black/30 p-3 font-mono text-[11px] leading-5 text-blue-100/75">
+                            <div ref={tokenBoxRef} className="mt-3 max-h-28 overflow-y-auto rounded-xl border border-blueprint-line bg-blueprint-bg p-3 font-mono text-[11px] leading-5 text-blueprint-muted">
                               {streamedTokens}
                             </div>
                           )}
@@ -624,20 +651,19 @@ function WorkflowDetailInner() {
               </div>
 
               <div className="mt-8 space-y-2 text-center sm:text-left">
-                <p className="text-sm text-white/55">This usually takes 10-15 seconds</p>
-                <p className="text-xs text-white/35 font-mono break-words">{promptContext}</p>
+                <p className="text-sm text-blueprint-muted">This usually takes 10-15 seconds</p>
+                <p className="text-xs text-blueprint-muted/60 font-mono break-words">{promptContext}</p>
               </div>
             </div>
           </motion.section>
         ) : (
           <motion.section
             key="ready"
-            initial={{ opacity: 0, y: 30 }}
+            initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.4, delay: 0.2 }}
+            transition={{ duration: 0.35 }}
             className="min-h-screen bg-blueprint-bg text-blueprint-accent"
-            style={{ viewTransitionName: 'workflow-card' }}
           >
             <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 lg:py-8 space-y-6 sm:space-y-8">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -706,6 +732,18 @@ function WorkflowDetailInner() {
                 </div>
               </div>
 
+              {activationWarning && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  {activationWarning}
+                  <button
+                    onClick={() => navigate('/settings/integrations')}
+                    className="ml-2 inline-flex items-center underline underline-offset-2"
+                  >
+                    Open Settings
+                  </button>
+                </div>
+              )}
+
               <div className={cn('rounded-[28px] border border-blueprint-line bg-white shadow-[0_22px_60px_rgba(0,0,0,0.08)] overflow-hidden transition-all', phase === 'running' ? 'h-[42vh] sm:h-[48vh] lg:h-[55vh]' : 'h-[55vh]')}>
                 <ReactFlow
                   nodes={nodes}
@@ -746,10 +784,10 @@ function WorkflowDetailInner() {
                       <div className="rounded-2xl border border-dashed border-blueprint-line p-4 text-sm text-blueprint-muted">No external integrations required.</div>
                     ) : (
                       integrationsNeeded.map((integration) => {
-                        const normalizedTarget = integration.toLowerCase();
+                        const normalizedTarget = normalizeIntegrationName(integration);
                         const match = connectedIntegrations.find((item) => {
-                          const normalizedProvider = String(item.provider || '').toLowerCase();
-                          return normalizedTarget.includes(normalizedProvider) || normalizedProvider.includes(normalizedTarget);
+                          const normalizedProvider = normalizeIntegrationName(item.provider);
+                          return normalizedTarget === normalizedProvider;
                         });
 
                         return (
@@ -901,7 +939,10 @@ function WorkflowDetailInner() {
                               <div className="min-w-0">
                                 <p className="text-xs text-white/40 font-mono">{new Date(log.timestamp).toLocaleTimeString()}</p>
                                 <p className="mt-1 text-sm text-white/90 break-words">{log.nodeLabel} → <span className={cn(log.status === 'running' && 'text-blue-300', log.status === 'passed' && 'text-green-300', log.status === 'failed' && 'text-red-300', log.status === 'skipped' && 'text-yellow-200')}>{log.status}</span></p>
-                                {log.outputPreview && <p className="mt-1 text-xs text-white/55 break-words">{log.outputPreview}</p>}
+                                {log.status === 'skipped' && log.skipReason && (
+                                  <p className="mt-1 text-xs text-yellow-200 break-words">Reason: {log.skipReason}</p>
+                                )}
+                                {log.status !== 'skipped' && log.outputPreview && <p className="mt-1 text-xs text-white/55 break-words">{log.outputPreview}</p>}
                               </div>
                               <div className="text-right text-xs text-white/45 font-mono">
                                 <p>+ {formatCurrency(log.costInr)}</p>

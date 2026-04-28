@@ -45,7 +45,7 @@ export async function generateWorkflowFromPrompt(prompt: string): Promise<Workfl
       AVAILABLE NODE TYPES:
       - cron_trigger: Scheduled start. Config: { cron: string }
       - llm_call: AI task. Config: { model, system_prompt, input_template }
-      - tool_call: External tool (gmail, sheets, slack, notion, hubspot). Config: { mcp_server, tool_name, tool_params_template }
+      - tool_call: External tool (gmail, sheets, slack, notion). Config: { mcp_server, tool_name, tool_params_template }
       - condition: Branch logic. Config: { expression }
       - human_gate: Approval step. Config: { notify_user_id }
       

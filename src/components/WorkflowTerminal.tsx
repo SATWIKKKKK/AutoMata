@@ -17,10 +17,10 @@ export default function WorkflowTerminal({ onSuccess }: WorkflowTerminalProps) {
 
   const examples = [
     "Every Monday 9AM, read my Google Sheet 'Sales Tracker', summarize revenue, and email it to team@company.com",
-    "When a new row is added to my Leads Sheet, create a HubSpot contact and send them a welcome email",
+    "When a new row is added to my Leads Sheet, draft a personalized outreach email and send it via Gmail",
     "Check my Gmail for unread client emails, draft reply suggestions, and post them to #support Slack channel",
     "On the 1st of every month, pull revenue data from Sheets and write a board summary in Notion",
-    "Check HubSpot for deals with no activity in 7 days and send a follow-up email to each contact"
+    "Every weekday at 9AM, summarize yesterday's customer updates and post them to Slack"
   ];
 
   const handleCycleExample = () => {

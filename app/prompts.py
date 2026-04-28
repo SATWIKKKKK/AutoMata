@@ -13,7 +13,6 @@ AVAILABLE MCP TOOLS:
 - gmail         → send_email(to[], subject, body)
 - slack         → send_message(channel, text)
 - notion        → create_page(parent_id, title, content)
-- hubspot       → create_contact(email, name, company)
 
 TEMPLATING SYNTAX:
 - {{ node_id.output }}         → full output of a node

@@ -1,7 +1,5 @@
 import React from 'react';
 import { 
-  Cloud, 
-  Layers, 
   Mail, 
   MessageSquare, 
   FileText, 
@@ -16,8 +14,6 @@ import { cn } from '../lib/utils';
 import { motion } from 'framer-motion';
 
 const integrations = [
-  { id: 'sf', provider: 'Salesforce', mcp: 'mcp.salesforce.v1', icon: Cloud, status: 'connected', health: '99.9% uptime (45ms)', desc: 'Read/write access to CRM objects, contacts, and opportunities.', enabled: true },
-  { id: 'hb', provider: 'HubSpot', mcp: 'mcp.hubspot.v2', icon: Layers, status: 'connected', health: '100% uptime (32ms)', desc: 'Marketing automation, email campaigns, and lead scoring sync.', enabled: true },
   { id: 'gm', provider: 'Gmail', mcp: 'mcp.google.mail', icon: Mail, status: 'expired', health: 'Auth Token Expired', desc: 'Read, draft, and send emails on behalf of authenticated users.', enabled: false },
   { id: 'sl', provider: 'Slack', mcp: 'mcp.slack.v1', icon: MessageSquare, status: 'connected', health: '99.8% uptime (60ms)', desc: 'Channel messaging, thread management, and user lookups.', enabled: false },
   { id: 'nt', provider: 'Notion', mcp: 'mcp.notion.v1', icon: FileText, status: 'connected', health: '99.9% uptime (85ms)', desc: 'Database querying, page creation, and block-level editing.', enabled: true },

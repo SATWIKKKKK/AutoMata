@@ -40,6 +40,17 @@ Node config rules:
 - condition: { expression: string }
 - human_gate: { notify_user_id: string, instructions?: string }
 
+Available tool_name values (use only these exact names):
+- read_range (Google Sheets read)
+- send_email (Gmail send)
+- send_slack_message (Slack chat.postMessage)
+- create_notion_page (Notion page creation)
+
+Tool constraints:
+- Never invent tool names (for example: retrieve_context, publish_content, send_report).
+- If a requested action does not match an available tool, use llm_call or human_gate instead of unsupported tool_call.
+- Prefer mcp_server values that reflect the provider (for example: google_sheets, gmail, slack, notion).
+
 Return JSON with this exact shape:
 {
   "workflow_name": "string",
@@ -112,12 +123,19 @@ export function normalizeGeneratedWorkflowDag(raw: any): GeneratedWorkflowDag {
   const nodes: GeneratedWorkflowNode[] = sourceNodes.map((node: any, index: number) => {
     const type = normalizeNodeType(node?.type);
     const baseX = type === 'condition' ? 120 : 0;
+    const config = typeof node?.config === 'object' && node?.config !== null
+      ? { ...node.config }
+      : {};
+
+    if (type === 'condition' && typeof config.expression === 'string') {
+      config.expression = config.expression.replace(/\{\{\s*([^}]+)\s*\}\}/g, '$1').trim();
+    }
 
     return {
       id: String(node?.id ?? `node_${index + 1}`),
       type,
       label: String(node?.label ?? defaultLabel(type, index)),
-      config: typeof node?.config === 'object' && node?.config !== null ? node.config : {},
+      config,
       position: {
         x: Number(node?.position?.x ?? baseX),
         y: Number(node?.position?.y ?? index * 180),
@@ -310,6 +328,24 @@ export function buildFallbackWorkflowDag(
   const hasSheet = text.includes('google sheet') || text.includes('spreadsheet') || text.includes('sheet');
   const hasEmail = text.includes('email') || text.includes('gmail');
   const hasSlack = text.includes('slack');
+  const hasNotion = text.includes('notion');
+
+  const detectSlackChannel = (rawPrompt: string): string | null => {
+    const value = String(rawPrompt ?? '');
+    const channelIdMatch = value.match(/\bC[A-Z0-9]{8,}\b/);
+    if (channelIdMatch?.[0]) {
+      return channelIdMatch[0];
+    }
+
+    const channelNameMatch = value.match(/#[a-z0-9][a-z0-9_-]*/i);
+    if (channelNameMatch?.[0]) {
+      return channelNameMatch[0];
+    }
+
+    return null;
+  };
+
+  const slackChannel = detectSlackChannel(prompt) || process.env.SLACK_DEFAULT_CHANNEL || '#general';
 
   const fallbackSummary = buildFallbackSummary(prompt);
   const workflowName = String(preferredName ?? fallbackSummary.name).trim() || 'Generated Workflow';
@@ -413,12 +449,27 @@ export function buildFallbackWorkflowDag(
             mcp_server: 'slack',
             tool_name: 'post_message',
             tool_params_template: {
-              channel: '#team-updates',
+                channel: slackChannel,
               text: '{{ llm_1.output }}',
             },
           },
           position: { x: 0, y: currentY },
         }
+        : hasNotion
+          ? {
+              id: finalNodeId,
+              type: 'tool_call',
+              label: 'Create Notion Page',
+              config: {
+                mcp_server: 'notion',
+                tool_name: 'create_notion_page',
+                tool_params_template: {
+                  title: `${workflowName} Update`,
+                  content: '{{ llm_1.output }}',
+                },
+              },
+              position: { x: 0, y: currentY },
+            }
       : {
           id: finalNodeId,
           type: 'tool_call',

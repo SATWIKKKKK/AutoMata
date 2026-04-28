@@ -1,8 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowRight, Github, ArrowLeft } from "lucide-react";
 import { cn } from "../lib/utils";
-import { persistSessionUser } from '../lib/session';
+import { authenticateLocalAccount, persistSessionUser, registerLocalAccount } from '../lib/session';
 
 interface AuthProps {
   onAuthSuccess: () => void;
@@ -18,17 +18,53 @@ export default function Auth({
   const [mode, setMode] = useState<"login" | "signup" | "forgot">(initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [fullname, setFullname] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [socialToast, setSocialToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMode(initialMode);
+  }, [initialMode]);
+
+  const showComingSoon = (provider: 'GitHub' | 'Google') => {
+    setSocialToast(`${provider} auth is coming soon.`);
+    window.setTimeout(() => setSocialToast(null), 2500);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const userData = {
-      email,
-      name: mode === 'signup' ? fullname : (email.split('@')[0] || 'User'),
-      loggedIn: true,
-      joinedAt: new Date().toISOString(),
-    };
-    persistSessionUser(userData);
+    setAuthError(null);
+
+    if (mode === 'signup') {
+      if (password !== confirmPassword) {
+        setAuthError('Password and confirm password must match.');
+        return;
+      }
+
+      const result = registerLocalAccount({
+        email,
+        name: fullname,
+        password,
+      });
+
+      if ('error' in result) {
+        setAuthError(result.error);
+        return;
+      }
+
+      persistSessionUser(result.user);
+      onAuthSuccess();
+      return;
+    }
+
+    const result = authenticateLocalAccount({ email, password });
+    if ('error' in result) {
+      setAuthError(result.error);
+      return;
+    }
+
+    persistSessionUser(result.user);
     onAuthSuccess();
   };
 
@@ -67,14 +103,14 @@ export default function Auth({
 
         {/* Social Auth Actions */}
         <div className="flex flex-col gap-3 mb-8">
-          <button className="w-full flex items-center justify-center gap-3 py-3 px-4 border border-outline rounded text-on-surface font-ui-label text-ui-label hover:bg-surface-container transition-colors duration-200 group">
+          <button type="button" onClick={() => showComingSoon('GitHub')} className="w-full flex items-center justify-center gap-3 py-3 px-4 border border-outline rounded text-on-surface font-ui-label text-ui-label hover:bg-surface-container transition-colors duration-200 group">
             <Github
               size={18}
               className="opacity-80 group-hover:opacity-100 transition-opacity"
             />
             Sign Up with GitHub
           </button>
-          <button className="w-full flex items-center justify-center gap-3 py-3 px-4 border border-outline rounded text-on-surface font-ui-label text-ui-label hover:bg-surface-container transition-colors duration-200 group">
+          <button type="button" onClick={() => showComingSoon('Google')} className="w-full flex items-center justify-center gap-3 py-3 px-4 border border-outline rounded text-on-surface font-ui-label text-ui-label hover:bg-surface-container transition-colors duration-200 group">
             <svg
               aria-hidden="true"
               className="w-5 h-5 opacity-80 group-hover:opacity-100 transition-opacity"
@@ -166,6 +202,29 @@ export default function Auth({
               type="password"
             />
           </div>
+          {/* Confirm Password */}
+          <div className="relative flex flex-col mb-2">
+            <label
+              className="font-ui-label text-ui-label text-on-surface-variant mb-2"
+              htmlFor="confirm-password"
+            >
+              Confirm Password
+            </label>
+            <input
+              className="w-full bg-transparent border-0 border-b border-primary p-0 pb-2 focus:ring-0 focus:border-b-2 focus:border-primary font-body-md text-body-md placeholder:text-on-surface-variant/40 transition-all outline-none"
+              id="confirm-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="••••••••"
+              required
+              type="password"
+            />
+          </div>
+          {(authError || socialToast) && (
+            <p className={cn('text-sm', authError ? 'text-red-600' : 'text-blueprint-muted')}>
+              {authError ?? socialToast}
+            </p>
+          )}
           {/* Submit Action */}
           <button
             className="w-full bg-black text-white py-4 rounded-full font-ui-label text-ui-label uppercase tracking-widest hover:bg-neutral-800 shadow-xl hover:shadow-2xl transition-all mt-2 active:scale-95"
@@ -363,6 +422,11 @@ export default function Auth({
               />
               <div className="absolute bottom-0 left-0 w-full h-[1px] bg-outline-variant"></div>
             </div>
+            {(authError || socialToast) && (
+              <p className={cn('text-sm', authError ? 'text-red-600' : 'text-blueprint-muted')}>
+                {authError ?? socialToast}
+              </p>
+            )}
             {/* Sign In Button */}
             <div className="pt-4">
               <button
@@ -387,6 +451,7 @@ export default function Auth({
             {/* GitHub Button */}
             <button
               className="w-full border border-surface-variant bg-transparent text-primary font-ui-label text-ui-label py-3 rounded-full hover:bg-surface-container-low transition-colors duration-200 flex items-center justify-center gap-3"
+              onClick={() => showComingSoon('GitHub')}
               type="button"
             >
               <Github size={18} />
@@ -395,6 +460,7 @@ export default function Auth({
             {/* Google Button */}
             <button
               className="w-full border border-surface-variant bg-transparent text-primary font-ui-label text-ui-label py-3 rounded-full hover:bg-surface-container-low transition-colors duration-200 flex items-center justify-center gap-3"
+              onClick={() => showComingSoon('Google')}
               type="button"
             >
               <svg

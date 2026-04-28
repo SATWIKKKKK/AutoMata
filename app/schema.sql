@@ -114,7 +114,7 @@ CREATE TABLE human_gate_requests (
 CREATE INDEX idx_human_gate_requests_node_execution ON human_gate_requests(node_execution_id);
 
 -- Integrations
-CREATE TYPE integration_provider AS ENUM ('gmail', 'sheets', 'slack', 'notion', 'hubspot', 'salesforce');
+CREATE TYPE integration_provider AS ENUM ('gmail', 'sheets', 'slack', 'notion', 'salesforce');
 CREATE TABLE integrations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,

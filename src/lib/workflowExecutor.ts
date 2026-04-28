@@ -102,9 +102,28 @@ function isAnthropicUnavailable(error: unknown): boolean {
     normalized.includes('authentication_error') ||
     normalized.includes('anthropic_api_key') ||
     normalized.includes('401') ||
+    normalized.includes('402') ||
+    normalized.includes('budget exceeded') ||
+    normalized.includes('insufficient credit') ||
+    normalized.includes('insufficient credits') ||
     normalized.includes('not a valid model id') ||
-    normalized.includes('model')
+    normalized.includes('model') ||
+    normalized.includes('timeout') ||
+    normalized.includes('timed out')
   );
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
 }
 
 function resolveRuntimeModel(requestedModel: unknown, fallbackModel: string): string {
@@ -180,7 +199,15 @@ async function executeNode(
 
       const tool = getTool(toolName);
       if (!tool) {
-        throw new Error(`Tool '${toolName}' is not registered. Add it to toolRegistry.ts`);
+        return {
+          output: {
+            status: 'skipped',
+            reason: `Tool '${toolName}' is not registered.`,
+            tool_not_registered: true,
+          },
+          tokensUsed: 0,
+          costInr: 0,
+        };
       }
 
       const params = renderTemplate(
@@ -227,6 +254,7 @@ async function executeNode(
     case 'llm_call': {
       const fallbackModel = process.env.WORKFLOW_EXEC_MODEL ?? process.env.ANTHROPIC_MODEL ?? 'claude-haiku-3-5-20251001';
       const model = resolveRuntimeModel(node.config.model, fallbackModel);
+      const llmTimeoutMs = Number(process.env.WORKFLOW_EXEC_LLM_TIMEOUT_MS ?? 45000);
       const systemPrompt = renderTemplate(
         node.config.system_prompt ?? 'You are a helpful assistant.',
         context,
@@ -237,13 +265,17 @@ async function executeNode(
       ) as string;
 
       try {
-        const msg = await requestLlmCompletion({
-          model,
-          maxTokens: node.config.max_tokens ?? 500,
-          temperature: node.config.temperature ?? 0.3,
-          system: systemPrompt,
-          user: userPrompt,
-        });
+        const msg = await withTimeout(
+          requestLlmCompletion({
+            model,
+            maxTokens: node.config.max_tokens ?? 500,
+            temperature: node.config.temperature ?? 0.3,
+            system: systemPrompt,
+            user: userPrompt,
+          }),
+          llmTimeoutMs,
+          `LLM node ${node.id}`,
+        );
 
         const rawText = msg.text;
 
@@ -278,6 +310,7 @@ async function executeNode(
       const retryCount: number = context[`${node.id}_retryCount`] ?? 0;
       const fallbackEvaluatorModel = process.env.WORKFLOW_EVALUATOR_MODEL ?? process.env.ANTHROPIC_MODEL ?? 'claude-haiku-3-5-20251001';
       const evaluatorModel = resolveRuntimeModel(node.config.model, fallbackEvaluatorModel);
+      const llmTimeoutMs = Number(process.env.WORKFLOW_EXEC_LLM_TIMEOUT_MS ?? 45000);
 
       const evaluatorPrompt = `You are an evaluator. Given this output:\n\n${JSON.stringify(targetOutput)}\n\nEvaluate it on this criterion: ${criteria}\n\nRespond with JSON only: { "score": 1-10, "passed": true/false, "reason": "...", "retry_instruction": "..." }`;
 
@@ -286,13 +319,17 @@ async function executeNode(
       let costInr = 0;
 
       try {
-        const msg = await requestLlmCompletion({
-          model: evaluatorModel,
-          maxTokens: 300,
-          temperature: 0,
-          system: 'You are a strict output evaluator. Respond only with valid JSON.',
-          user: evaluatorPrompt,
-        });
+        const msg = await withTimeout(
+          requestLlmCompletion({
+            model: evaluatorModel,
+            maxTokens: 300,
+            temperature: 0,
+            system: 'You are a strict output evaluator. Respond only with valid JSON.',
+            user: evaluatorPrompt,
+          }),
+          llmTimeoutMs,
+          `Evaluator node ${node.id}`,
+        );
 
         const rawText = msg.text;
 
@@ -426,6 +463,11 @@ export async function executeWorkflow(
           options,
         );
 
+        const normalizedStatus = output?.status === 'skipped' ? 'skipped' : 'passed';
+        const outputPreview = normalizedStatus === 'skipped'
+          ? String(output?.reason ?? output?.status ?? 'Skipped')
+          : toPreview(output);
+
         context[node.id] = { output, response: output, result: output };
         totalTokens += tokensUsed;
         totalCostInr += costInr;
@@ -434,9 +476,9 @@ export async function executeWorkflow(
           nodeId: node.id,
           nodeLabel: node.label ?? node.id,
           nodeType: node.type,
-          status: 'passed',
+          status: normalizedStatus,
           output,
-          outputPreview: toPreview(output),
+          outputPreview,
           tokensUsed,
           costInr,
           durationMs: Date.now() - startedAt,

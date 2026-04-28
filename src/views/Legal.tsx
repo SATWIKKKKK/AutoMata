@@ -58,7 +58,7 @@ export function Privacy({ onViewChange }: LegalProps) {
       </section>
       <section>
         <h2 className="text-xl font-semibold text-primary mb-3">4. Third-Party Services</h2>
-        <p>Automata integrates with third-party services (Gmail, Slack, HubSpot, etc.) only when you explicitly authorise these connections. We access only the minimum permissions required to execute your configured workflows.</p>
+        <p>Automata integrates with third-party services (Gmail, Slack, Notion, etc.) only when you explicitly authorise these connections. We access only the minimum permissions required to execute your configured workflows.</p>
       </section>
       <section>
         <h2 className="text-xl font-semibold text-primary mb-3">5. Your Rights</h2>

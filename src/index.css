@@ -13,6 +13,50 @@
 }
 
 @layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    overflow-x: hidden;
+    max-width: 100vw;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font-size: 16px;
+  }
+
+  img,
+  svg,
+  video,
+  canvas {
+    max-width: 100%;
+    height: auto;
+  }
+
+  @media (max-width: 480px) {
+    button,
+    input[type='button'],
+    input[type='submit'],
+    input[type='reset'] {
+      min-height: 44px;
+    }
+
+    form button,
+    form input[type='button'],
+    form input[type='submit'],
+    form input[type='reset'] {
+      width: 100%;
+    }
+  }
+
   body {
     @apply bg-blueprint-bg text-blueprint-accent antialiased;
   }
@@ -47,13 +91,13 @@
 
 @layer utilities {
   .text-display-xl {
-    @apply font-serif text-[72px] leading-[1.1] tracking-[-0.02em];
+    @apply font-serif text-[clamp(2.25rem,9vw,72px)] leading-[1.1] tracking-[-0.02em];
   }
   .text-headline-lg {
-    @apply font-serif text-[48px] leading-[1.2];
+    @apply font-serif text-[clamp(1.9rem,7.2vw,48px)] leading-[1.2];
   }
   .text-headline-md {
-    @apply font-serif text-[32px] leading-[1.3] italic;
+    @apply font-serif text-[clamp(1.55rem,6.2vw,32px)] leading-[1.3] italic;
   }
   .text-body-lg {
     @apply font-sans text-[18px] leading-[1.6];

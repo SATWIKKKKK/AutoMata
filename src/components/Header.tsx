@@ -12,6 +12,7 @@ import {
   ChevronDown,
   Menu,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { View } from '../App';
 import { cn } from '../lib/utils';
 import { clearSessionState, getStoredUser } from '../lib/session';
@@ -30,6 +31,7 @@ function getInitials(name?: string, email?: string): string {
 }
 
 export default function Header({ view, workflowName, onViewChange, onMenuToggle }: HeaderProps) {
+  const navigate = useNavigate();
   const isEditor = view === 'editor';
   const isSettings = view === 'settings';
   const user = getStoredUser();
@@ -59,6 +61,13 @@ export default function Header({ view, workflowName, onViewChange, onMenuToggle 
       <div className="flex items-center gap-3 sm:gap-6 h-full min-w-0">
         <button onClick={onMenuToggle} className="md:hidden rounded-full border border-blueprint-line p-2 text-blueprint-muted hover:text-primary">
           <Menu size={16} />
+        </button>
+        <button
+          onClick={() => navigate('/')}
+          className="font-serif italic text-xl sm:text-2xl text-primary tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
+          aria-label="Go to home"
+        >
+          AUTOMATA
         </button>
         <h2
           className={cn(

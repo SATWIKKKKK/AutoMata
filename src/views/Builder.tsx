@@ -42,12 +42,12 @@ const CHIPS: { label: string; prompt: string }[] = [
   {
     label: 'Lead Auto-Enrich',
     prompt:
-      "When a new row appears in my Google Sheet 'New Leads', look up the company using the domain column, add employee count and industry to the sheet, then create a HubSpot contact and send a welcome email via Gmail",
+      "When a new row appears in my Google Sheet 'New Leads', look up the company using the domain column, add employee count and industry to the sheet, then draft and send a welcome email via Gmail",
   },
   {
     label: 'Client Follow-up',
     prompt:
-      "Every Friday at 5PM, check HubSpot for deals with no activity in the last 7 days, write a personalized follow-up email for each, and send them via Gmail",
+      "Every Friday at 5PM, scan my Google Sheet 'Pipeline' for leads with no update in 7 days, write a personalized follow-up email for each, and send them via Gmail",
   },
   {
     label: 'Monthly Board Summary',
@@ -284,7 +284,7 @@ export default function Builder({ onViewChange }: BuilderProps) {
 
       sessionStorage.setItem('orren-generating-prompt', safePrompt);
 
-      const goToWorkflow = () => navigate(`/workflows/${data.workflowId}?status=generating`);
+      const goToWorkflow = () => navigate(`/workflows/${data.workflowId}?generating=true`);
       const transitionDoc = document as Document & { startViewTransition?: (callback: () => void) => void };
 
       if (transitionDoc.startViewTransition) {
