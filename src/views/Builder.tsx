@@ -1,550 +1,549 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Search, X, Send, Plus, MoreHorizontal, Play, Pause,
-  Trash2, Edit3, ChevronDown, Clock, Zap,
-  FileText, AlertCircle,
-} from 'lucide-react';
-import { cn } from '../lib/utils';
+import { ProjectScanner } from '../components/ModulePlaceholders';
 import { View } from '../App';
-
-// ─── Types ─────────────────────────────────────────────────────────────────
-
-interface Workflow {
-  id: string;
-  name: string;
-  description: string;
-  status: 'active' | 'paused' | 'draft' | 'generating' | 'ready' | 'failed';
-  generationError?: string | null;
-  prompt?: string;
-  created_at: string;
-  last_run?: string;
-  next_run?: string;
-  cron_schedule?: string;
-}
-
-type FilterTab = 'All' | 'Active' | 'Paused' | 'Draft';
+import {
+  analyzeManualDescription,
+  analyzeRepository,
+  COMPANY_TYPE_LABELS,
+  DEFAULT_PREP_SELECTIONS,
+  DOMAIN_LABELS,
+  EXPERIENCE_LABELS,
+  generateDiagnosticQuestions,
+  generatePrepPlan,
+  getStoredPrepWorkspace,
+  INTERVIEW_TYPE_LABELS,
+  PrepWorkspaceState,
+  TIMELINE_LABELS,
+  updatePrepWorkspace,
+} from '../lib/prep';
 
 interface BuilderProps {
   onViewChange: (view: View) => void;
 }
 
-// ─── Chip prompts ───────────────────────────────────────────────────────────
-
-const CHIPS: { label: string; prompt: string }[] = [
-  {
-    label: 'Weekly Sales Report',
-    prompt:
-      "Every Monday at 9AM, read my Google Sheet 'Weekly Sales Tracker', summarize last 7 days revenue and product performance, write a clean business email under 150 words, and send it to team@company.com",
-  },
-  {
-    label: 'Lead Auto-Enrich',
-    prompt:
-      "When a new row appears in my Google Sheet 'New Leads', look up the company using the domain column, add employee count and industry to the sheet, then draft and send a welcome email via Gmail",
-  },
-  {
-    label: 'Client Follow-up',
-    prompt:
-      "Every Friday at 5PM, scan my Google Sheet 'Pipeline' for leads with no update in 7 days, write a personalized follow-up email for each, and send them via Gmail",
-  },
-  {
-    label: 'Monthly Board Summary',
-    prompt:
-      "On the 1st of every month at 8AM, pull last month's revenue data from my Google Sheet, write a 300-word executive summary, create a page in Notion, and send the link to ceo@company.com",
-  },
-  {
-    label: 'Invoice Reminder',
-    prompt:
-      "Every Monday, check my Google Sheet 'Invoices' for rows where Status is 'Unpaid' and Due Date is past, and send a polite reminder email to the client email column for each row",
-  },
-  {
-    label: 'Slack Digest',
-    prompt:
-      "Every weekday at 9AM, summarize the top 5 action items from yesterday's activity across my workflows and post a digest message to my #team-updates Slack channel",
-  },
-];
-
-// ─── Status badge ────────────────────────────────────────────────────────────
-
-function StatusBadge({ status }: { status: Workflow['status'] }) {
-  const map = {
-    active: 'bg-green-100 text-green-800 border border-green-200',
-    paused: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
-    draft: 'bg-gray-100 text-gray-600 border border-gray-200',
-    ready: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
-    generating: 'bg-blue-100 text-blue-800 border border-blue-200',
-    failed: 'bg-red-100 text-red-700 border border-red-200',
-  };
-  return (
-    <span className={cn('text-xs px-2 py-0.5 rounded-full font-medium capitalize', map[status])}>
-      {status}
-    </span>
-  );
-}
-
-// ─── Workflow card ────────────────────────────────────────────────────────────
-
-function WorkflowCard({
-  workflow,
-  onNavigate,
-  onStatusToggle,
-  onDelete,
-}: {
-  workflow: Workflow;
-  onNavigate: () => void;
-  onStatusToggle: () => void;
-  onDelete: () => void;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handler(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    }
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.96 }}
-      className="bg-surface-container-lowest border border-outline-variant rounded-xl p-6 hover:shadow-md transition-shadow cursor-pointer group"
-      onClick={onNavigate}
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <h3 className="font-semibold text-primary text-base truncate">{workflow.name}</h3>
-            <StatusBadge status={workflow.status} />
-          </div>
-          <p className={cn('text-sm line-clamp-2 mb-4', workflow.status === 'failed' ? 'text-red-600' : 'text-on-surface-variant')}>
-            {workflow.description || workflow.generationError || 'No description'}
-          </p>
-
-          <div className="flex flex-wrap gap-4 text-xs text-on-surface-variant">
-            <span className="flex items-center gap-1">
-              <Clock size={12} />
-              Last run: {workflow.last_run ?? 'Never'}
-            </span>
-            <span className="flex items-center gap-1">
-              <Zap size={12} />
-              Next: {workflow.next_run ?? 'Manual only'}
-            </span>
-          </div>
-        </div>
-
-        {/* Three-dot menu */}
-        <div className="relative shrink-0" ref={menuRef} onClick={e => e.stopPropagation()}>
-          <button
-            onClick={() => setMenuOpen(v => !v)}
-            className="p-1.5 rounded-lg hover:bg-surface-container text-on-surface-variant opacity-0 group-hover:opacity-100 transition-opacity"
-          >
-            <MoreHorizontal size={16} />
-          </button>
-          <AnimatePresence>
-            {menuOpen && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: -4 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: -4 }}
-                className="absolute right-0 top-8 w-40 bg-surface-container-lowest border border-outline-variant rounded-xl shadow-lg py-1 z-20"
-              >
-                <button
-                  onClick={onNavigate}
-                  className="flex items-center gap-2 w-full px-4 py-2 text-sm hover:bg-surface-container text-on-surface"
-                >
-                  <Edit3 size={13} /> Edit
-                </button>
-                <button
-                  onClick={onStatusToggle}
-                  className="flex items-center gap-2 w-full px-4 py-2 text-sm hover:bg-surface-container text-on-surface"
-                >
-                  {workflow.status === 'active' ? <Pause size={13} /> : <Play size={13} />}
-                  {workflow.status === 'active' ? 'Pause' : 'Activate'}
-                </button>
-                <button
-                  onClick={onDelete}
-                  className="flex items-center gap-2 w-full px-4 py-2 text-sm hover:bg-red-50 text-red-600"
-                >
-                  <Trash2 size={13} /> Delete
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-// ─── Main Component ──────────────────────────────────────────────────────────
-
-export default function Builder({ onViewChange }: BuilderProps) {
+export default function Builder(_props: BuilderProps) {
   const navigate = useNavigate();
-  // Terminal input
-  const [prompt, setPrompt] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [genError, setGenError] = useState<string | null>(null);
-  const [isTransitioning, setIsTransitioning] = useState(false);
-  const [charCount, setCharCount] = useState(0);
-  const MAX_CHARS = 500;
-  const chipsRef = useRef<HTMLDivElement>(null);
-
-  // Workflow list
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [loadingWorkflows, setLoadingWorkflows] = useState(true);
-
-  // Search + filter
-  const [search, setSearch] = useState('');
-  const [activeTab, setActiveTab] = useState<FilterTab>('All');
-  const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // ── Load workflows on mount ─────────────────────────────────────────────
-  useEffect(() => {
-    setLoadingWorkflows(true);
-    fetch('/api/workflows')
-      .then(r => r.json())
-      .then((data: { workflows?: Workflow[] }) => setWorkflows(Array.isArray(data?.workflows) ? data.workflows : []))
-      .catch(() => setWorkflows([]))
-      .finally(() => setLoadingWorkflows(false));
-  }, []);
+  const storedWorkspace = useMemo(() => getStoredPrepWorkspace(), []);
+  const [domain, setDomain] = useState(storedWorkspace.selections.domain || DEFAULT_PREP_SELECTIONS.domain);
+  const [interviewType, setInterviewType] = useState(storedWorkspace.selections.interviewType || DEFAULT_PREP_SELECTIONS.interviewType);
+  const [companyType, setCompanyType] = useState(storedWorkspace.selections.companyType || DEFAULT_PREP_SELECTIONS.companyType);
+  const [timeline, setTimeline] = useState(storedWorkspace.selections.timeline || DEFAULT_PREP_SELECTIONS.timeline);
+  const [experienceLevel, setExperienceLevel] = useState(storedWorkspace.selections.experienceLevel || DEFAULT_PREP_SELECTIONS.experienceLevel);
+  const [repositoryUrl, setRepositoryUrl] = useState(storedWorkspace.selections.repositoryUrl || '');
+  const [context, setContext] = useState(storedWorkspace.selections.manualDescription || '');
+  const [workspaceState, setWorkspaceState] = useState<PrepWorkspaceState>(storedWorkspace);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [activeRequest, setActiveRequest] = useState<'plan' | 'repo' | 'manual' | 'diagnostic' | null>(null);
 
   useEffect(() => {
-    const pendingTemplatePrompt = sessionStorage.getItem('pending-template-prompt');
-    if (!pendingTemplatePrompt) return;
-    setPrompt(pendingTemplatePrompt);
-    setCharCount(pendingTemplatePrompt.length);
-    sessionStorage.removeItem('pending-template-prompt');
-  }, []);
+    setWorkspaceState((current) => {
+      const next = updatePrepWorkspace({
+        selections: {
+          domain,
+          interviewType,
+          companyType,
+          timeline,
+          experienceLevel,
+          repositoryUrl,
+          manualDescription: context,
+        },
+      });
+      if (JSON.stringify(current.selections) === JSON.stringify(next.selections)) {
+        return current;
+      }
+      return next;
+    });
+  }, [companyType, context, domain, experienceLevel, interviewType, repositoryUrl, timeline]);
 
-  // ── Keyboard shortcut: Escape clears search ─────────────────────────────
-  useEffect(() => {
-    function handler(e: KeyboardEvent) {
-      if (e.key === 'Escape') setSearch('');
-    }
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
+  const projectInsight = workspaceState.repoAnalysis ?? workspaceState.manualAnalysis;
 
-  // ── Filtered + searched workflows ───────────────────────────────────────
-  const displayedWorkflows = useMemo(() => {
-    let list = workflows;
-    if (activeTab !== 'All') list = list.filter(w => w.status === activeTab.toLowerCase());
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        w =>
-          w.name.toLowerCase().includes(q) ||
-          (w.description ?? '').toLowerCase().includes(q),
-      );
-    }
-    return list;
-  }, [workflows, search, activeTab]);
+  const handleGeneratePlan = async () => {
+    setActiveRequest('plan');
+    setErrorMessage(null);
+    setStatusMessage(null);
 
-  // ── Generate workflow via API ────────────────────────────────────────────
-  const handleGenerate = useCallback(async () => {
-    const safePrompt = prompt.trim();
-    if (isGenerating) return;
-    if (safePrompt.length < 20) {
-      setGenError('Please describe your workflow in more detail (at least 20 characters)');
+    const result = await generatePrepPlan({ domain, interviewType, companyType, timeline });
+    if ('error' in result) {
+      setErrorMessage(result.error);
+      setActiveRequest(null);
       return;
     }
 
-    setIsGenerating(true);
-    setGenError(null);
+    const next = updatePrepWorkspace({
+      prepPlan: result.data,
+      meta: { plan: result.meta },
+    });
+    setWorkspaceState(next);
+    setStatusMessage('Your prep plan is ready.');
+    setActiveRequest(null);
+  };
 
-    try {
-      const res = await fetch('/api/workflows/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: safePrompt }),
-      });
-      const raw = await res.text();
-      let data: any = null;
-      if (raw) {
-        try {
-          data = JSON.parse(raw);
-        } catch {
-          throw new Error(`Workflow generation endpoint returned a non-JSON response (HTTP ${res.status}). Make sure you are on the current dev server.`);
-        }
-      }
-      if (!res.ok) {
-        setGenError(data?.error ?? `Failed to start generation (HTTP ${res.status})`);
-        setIsGenerating(false);
-        return;
-      }
-
-      if (!data?.workflowId) {
-        throw new Error('Workflow generation endpoint returned an empty response. Refresh the app and try again.');
-      }
-
-      sessionStorage.setItem('orren-generating-prompt', safePrompt);
-
-      const goToWorkflow = () => navigate(`/workflows/${data.workflowId}?generating=true`);
-      const transitionDoc = document as Document & { startViewTransition?: (callback: () => void) => void };
-
-      if (transitionDoc.startViewTransition) {
-        transitionDoc.startViewTransition(goToWorkflow);
-      } else {
-        setIsTransitioning(true);
-        window.setTimeout(goToWorkflow, 400);
-      }
-    } catch (err: any) {
-      setIsGenerating(false);
-      setIsTransitioning(false);
-      setGenError(err.message ?? 'Network error. Please try again.');
+  const handleRepositoryAnalysis = async () => {
+    if (!repositoryUrl.trim()) {
+      setErrorMessage('Add a GitHub repository URL first.');
+      return;
     }
-  }, [isGenerating, navigate, prompt]);
 
-  // ── Status toggle ───────────────────────────────────────────────────────
-  const toggleStatus = useCallback(async (wf: Workflow) => {
-    const newStatus = wf.status === 'active' ? 'paused' : 'active';
-    setWorkflows(prev => prev.map(w => (w.id === wf.id ? { ...w, status: newStatus } : w)));
-    await fetch(`/api/workflows/${wf.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus }),
-    }).catch(() => {});
-  }, []);
+    setActiveRequest('repo');
+    setErrorMessage(null);
+    setStatusMessage(null);
 
-  // ── Delete ──────────────────────────────────────────────────────────────
-  const deleteWorkflow = useCallback(async (id: string) => {
-    setWorkflows(prev => prev.filter(w => w.id !== id));
-    await fetch(`/api/workflows/${id}`, { method: 'DELETE' }).catch(() => {});
-  }, []);
+    const result = await analyzeRepository(repositoryUrl);
+    if ('error' in result) {
+      setErrorMessage(result.error);
+      setActiveRequest(null);
+      return;
+    }
 
-  const TABS: FilterTab[] = ['All', 'Active', 'Paused', 'Draft'];
+    const next = updatePrepWorkspace({
+      repoAnalysis: result.data,
+      meta: { repo: result.meta },
+    });
+    setWorkspaceState(next);
+    setStatusMessage('Your project talking points are ready.');
+    setActiveRequest(null);
+  };
+
+  const handleManualAnalysis = async () => {
+    if (!context.trim()) {
+      setErrorMessage('Describe the project before running a project review.');
+      return;
+    }
+
+    setActiveRequest('manual');
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    const result = await analyzeManualDescription(context);
+    if ('error' in result) {
+      setErrorMessage(result.error);
+      setActiveRequest(null);
+      return;
+    }
+
+    const next = updatePrepWorkspace({
+      manualAnalysis: result.data,
+      meta: { manual: result.meta },
+    });
+    setWorkspaceState(next);
+    setStatusMessage('The manual project review is ready.');
+    setActiveRequest(null);
+  };
+
+  const handleGenerateDiagnostic = async () => {
+    setActiveRequest('diagnostic');
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    const result = await generateDiagnosticQuestions({ domain, experienceLevel });
+    if ('error' in result) {
+      setErrorMessage(result.error);
+      setActiveRequest(null);
+      return;
+    }
+
+    const next = updatePrepWorkspace({
+      diagnosticQuestions: result.data,
+      meta: { diagnostic: result.meta },
+    });
+    setWorkspaceState(next);
+    setStatusMessage('Diagnostic questions generated.');
+    setActiveRequest(null);
+  };
 
   return (
-    <div className="min-h-full bg-background overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-8">
+    <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-16">
+      <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+      <main className="relative z-10 mx-auto my-6 w-full max-w-[980px] rounded-[24px] border border-blueprint-line bg-white/90 px-8 py-10 shadow-[0_20px_40px_rgba(0,0,0,0.03)] sm:px-16 sm:py-16">
+        <header className="mb-14">
+          <p className="text-ui-label text-blueprint-muted">Prep Setup</p>
+          <h1 className="mt-4 text-headline-lg text-primary">Set up your next interview block</h1>
+          <p className="mt-4 max-w-2xl text-body-lg text-blueprint-muted">
+            Choose the role you are aiming for, add your project context, and generate a focused plan before you start practicing.
+          </p>
+        </header>
 
-        {/* ── Part 1: Top Bar ─────────────────────────────────────────────── */}
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <span className="font-technical-mono text-technical-mono text-blueprint-muted uppercase tracking-widest">
-              Workflow Builder
-            </span>
-            <h1 className="font-display-xl text-display-xl text-primary leading-tight mt-1">
-              Build anything.<br />
-              <span className="italic text-blueprint-muted">Autonomously.</span>
-            </h1>
-            <p className="font-body-md text-body-md text-on-surface-variant mt-2">Describe your workflow in plain English and let AI do the rest</p>
+        <section className="mb-12">
+          <div className="mb-6 flex items-center gap-4">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-blueprint-line bg-[#efeded] text-ui-label text-primary">1</span>
+            <h2 className="text-ui-label text-primary">Domain</h2>
           </div>
-          <button
-            onClick={() => { setPrompt(''); setCharCount(0); setTimeout(() => document.getElementById('builder-prompt')?.focus(), 100); }}
-            className="flex items-center gap-2 bg-primary text-on-primary px-5 py-2.5 rounded-full font-ui-label text-ui-label hover:bg-inverse-surface transition-colors shrink-0 mt-2"
-          >
-            <Plus size={16} /> New Workflow
-          </button>
-        </div>
-
-        {/* ── Part 2: Search Bar ──────────────────────────────────────────── */}
-        <div className="w-full">
-          <div className="flex items-center gap-3 bg-surface-container-lowest border border-outline-variant rounded-full px-5 py-3 shadow-sm focus-within:border-primary transition-colors">
-            <Search size={16} className="text-on-surface-variant shrink-0" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search workflows by name or description..."
-              className="flex-1 bg-transparent border-none focus:ring-0 text-sm text-on-surface placeholder:text-on-surface-variant outline-none"
-            />
-            {search && (
-              <button onClick={() => setSearch('')} className="text-on-surface-variant hover:text-primary transition-colors">
-                <X size={14} />
-              </button>
-            )}
+          <div className="grid gap-4 md:grid-cols-2">
+            {[
+              ['frontend', 'Frontend', 'React, Vue, Component Architecture'],
+              ['backend', 'Backend', 'Node, Python, Distributed Systems'],
+              ['full-stack', 'Full Stack', 'UI, API, data flow, tradeoffs'],
+              ['ai-ml', 'AI / ML', 'Models, pipelines, evaluation, serving'],
+            ].map(([id, label, body]) => {
+              const checked = domain === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setDomain(id)}
+                  className={`rounded-xl border p-6 text-left transition-all ${checked ? 'border-primary bg-white shadow-[0_4px_24px_rgba(0,0,0,0.04)]' : 'border-blueprint-line bg-[#fbf9f9] hover:border-[#747878]'}`}
+                >
+                  <div className="mb-4 flex items-start justify-between gap-4">
+                    <span className="text-ui-label text-primary">{label}</span>
+                    <span className={`h-4 w-4 rounded-full border ${checked ? 'border-[5px] border-primary' : 'border-blueprint-line'}`} />
+                  </div>
+                  <p className="text-body-md text-blueprint-muted">{body}</p>
+                </button>
+              );
+            })}
           </div>
-          {search && (
-            <p className="text-xs text-on-surface-variant mt-2 pl-2">
-              Showing {displayedWorkflows.length} of {workflows.length} workflow{workflows.length !== 1 ? 's' : ''}
-            </p>
-          )}
-        </div>
+        </section>
 
-        {/* ── Part 3: Terminal Input ──────────────────────────────────────── */}
-        <div>
-          <div
-            className={cn(
-              'bg-surface-container-lowest rounded-xl overflow-hidden shadow-[0_8px_30px_rgba(0,0,0,0.03)] border border-outline-variant transition-all duration-300',
-              isTransitioning && 'workflow-card-expand fixed inset-0 z-50 rounded-none',
-            )}
-            style={{ viewTransitionName: 'workflow-card' }}
-          >
-            {/* Terminal header bar */}
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-outline-variant">
-              <div className="w-3 h-3 rounded-full bg-red-200" />
-              <div className="w-3 h-3 rounded-full bg-yellow-200" />
-              <div className="w-3 h-3 rounded-full bg-green-200" />
-              <span className="ml-3 text-xs text-blueprint-muted font-mono">automata — workflow generator</span>
-            </div>
-
-            {/* Input area */}
-            <div className="p-5 sm:p-6">
-              <div className="relative">
-                <textarea
-                  id="builder-prompt"
-                  value={prompt}
-                  onChange={e => {
-                    if (e.target.value.length <= MAX_CHARS) {
-                      setPrompt(e.target.value);
-                      setCharCount(e.target.value.length);
-                    }
-                  }}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleGenerate(); }
-                  }}
-                  disabled={isGenerating}
-                  rows={4}
-                  placeholder={`Describe your workflow in plain English...\ne.g. Every Monday 9AM, read my Google Sheet and email a summary to my team.`}
-                  className="w-full bg-transparent text-on-surface font-mono text-sm placeholder:text-blueprint-muted resize-none border-none focus:ring-0 outline-none leading-relaxed"
-                />
-              </div>
-
-              {/* Bottom bar */}
-              <div className="flex items-center justify-between mt-4 pt-4 border-t border-outline-variant">
-                <div className="flex items-center gap-3 text-blueprint-muted">
-                  <button className="hover:text-primary transition-colors p-1 rounded" title="Attach file">
-                    <FileText size={16} />
-                  </button>
-                  <button className="hover:text-primary transition-colors p-1 rounded" title="AI suggestions">
-                    <Zap size={16} />
-                  </button>
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className={cn('text-xs font-mono', charCount > 400 ? 'text-red-500' : 'text-blueprint-muted')}>
-                    {charCount} / {MAX_CHARS}
-                  </span>
+        <section className="mb-12">
+          <div className="mb-6 flex items-center gap-4">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-blueprint-line bg-[#efeded] text-ui-label text-primary">2</span>
+            <h2 className="text-ui-label text-primary">Target Role</h2>
+          </div>
+          <div className="grid gap-6 rounded-xl border border-blueprint-line bg-[#fbf9f9] p-6 lg:grid-cols-3">
+            <div>
+              <p className="text-ui-label text-blueprint-muted">Interview Type</p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                {Object.entries(INTERVIEW_TYPE_LABELS).map(([id, label]) => (
                   <button
-                    onClick={handleGenerate}
-                    disabled={isGenerating || !prompt.trim()}
-                    className="flex items-center gap-2 bg-primary text-on-primary px-5 py-2 rounded-full text-sm font-semibold hover:bg-inverse-surface transition-colors disabled:opacity-40"
+                    key={id}
+                    type="button"
+                    onClick={() => setInterviewType(id)}
+                    className={`rounded-full px-5 py-2 text-ui-label transition-colors ${interviewType === id ? 'bg-primary text-white' : 'border border-blueprint-line bg-white text-blueprint-muted hover:text-primary'}`}
                   >
-                    {isGenerating ? (
-                      <>
-                        <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        Generating…
-                      </>
-                    ) : (
-                      <>
-                        <Send size={14} /> Generate Workflow
-                      </>
-                    )}
+                    {label}
                   </button>
-                </div>
-              </div>
-            </div>
-
-            {genError && (
-              <div className="px-6 pb-4 flex items-center gap-2 text-red-400 text-sm font-mono">
-                <AlertCircle size={14} />
-                {genError}
-              </div>
-            )}
-          </div>
-
-          {isGenerating && (
-            <p className="mt-3 text-center text-sm text-blueprint-muted">Taking you to your workflow...</p>
-          )}
-
-          {/* ── Chip suggestions ── */}
-          <div ref={chipsRef} className="mt-4 space-y-2">
-            <div className="flex flex-wrap gap-2">
-              {CHIPS.map(chip => (
-                <button
-                  key={chip.label}
-                  onClick={() => { setPrompt(chip.prompt); setCharCount(chip.prompt.length); }}
-                  disabled={isGenerating}
-                  className="bg-surface-container border border-outline-variant rounded-full px-4 py-1.5 text-xs text-on-surface-variant hover:bg-surface-variant hover:text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-            <p className="font-body-md text-body-md text-on-surface-variant pl-1">
-              Click a template to prefill the prompt above, then customise and generate.
-            </p>
-          </div>
-        </div>
-
-        {/* ── Part 4 + 5: Workflow List with Filter Tabs ─────────────────── */}
-        <div>
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-            <h2 className="font-headline-md text-headline-md text-primary">Your Workflows</h2>
-
-            {/* Filter tabs */}
-            <div className="flex items-center bg-surface-container rounded-full p-1 gap-0.5">
-              {TABS.map(tab => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={cn(
-                    'px-4 py-1.5 rounded-full font-ui-label text-ui-label transition-all',
-                    activeTab === tab
-                      ? 'bg-surface-container-lowest text-primary shadow-sm border border-outline-variant'
-                      : 'text-on-surface-variant hover:text-primary',
-                  )}
-                >
-                  {tab}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {loadingWorkflows ? (
-            <div className="flex items-center justify-center py-20 text-on-surface-variant">
-              <div className="w-5 h-5 border-2 border-outline-variant border-t-primary rounded-full animate-spin mr-3" />
-              Loading workflows…
-            </div>
-          ) : displayedWorkflows.length === 0 ? (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex flex-col items-center justify-center py-20 text-center"
-            >
-              <div className="text-5xl mb-4">🤖</div>
-              <h3 className="text-base font-semibold text-primary mb-2">
-                {search || activeTab !== 'All' ? 'No workflows match your filters' : 'No workflows yet'}
-              </h3>
-              <p className="text-sm text-on-surface-variant mb-6 max-w-xs">
-                {search || activeTab !== 'All'
-                  ? 'Try adjusting your search or filter.'
-                  : 'Describe your first workflow above to get started.'}
-              </p>
-              {!search && activeTab === 'All' && (
-                <button
-                  onClick={() => chipsRef.current?.scrollIntoView({ behavior: 'smooth' })}
-                  className="text-sm text-primary border border-primary px-4 py-2 rounded-full hover:bg-surface-container transition-colors"
-                >
-                  See example workflows
-                </button>
-              )}
-            </motion.div>
-          ) : (
-            <AnimatePresence mode="popLayout">
-              <div className="grid grid-cols-1 gap-4">
-                {displayedWorkflows.map(wf => (
-                  <WorkflowCard
-                    key={wf.id}
-                    workflow={wf}
-                    onNavigate={() => navigate(`/workflows/${wf.id}`)}
-                    onStatusToggle={() => toggleStatus(wf)}
-                    onDelete={() => deleteWorkflow(wf.id)}
-                  />
                 ))}
               </div>
-            </AnimatePresence>
-          )}
-        </div>
+            </div>
 
-      </div>
+            <div>
+              <p className="text-ui-label text-blueprint-muted">Company Type</p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                {Object.entries(COMPANY_TYPE_LABELS).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setCompanyType(id)}
+                    className={`rounded-full px-5 py-2 text-ui-label transition-colors ${companyType === id ? 'bg-primary text-white' : 'border border-blueprint-line bg-white text-blueprint-muted hover:text-primary'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-ui-label text-blueprint-muted">Timeline</p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                {Object.entries(TIMELINE_LABELS).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setTimeline(id)}
+                    className={`rounded-full px-5 py-2 text-ui-label transition-colors ${timeline === id ? 'bg-primary text-white' : 'border border-blueprint-line bg-white text-blueprint-muted hover:text-primary'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-8 rounded-xl border border-blueprint-line bg-white/80 p-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h3 className="text-headline-md text-primary not-italic">Prep plan</h3>
+                <p className="mt-2 max-w-2xl text-body-md text-blueprint-muted">
+                  Build a role-specific plan for your {DOMAIN_LABELS[domain] ?? domain.toUpperCase()} track before you enter a timed round.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleGeneratePlan}
+                disabled={activeRequest === 'plan'}
+                className="rounded-full bg-primary px-6 py-3 text-ui-label text-white transition-colors hover:bg-[#303031] disabled:opacity-60"
+              >
+                {activeRequest === 'plan' ? 'Building Plan...' : 'Build My Plan'}
+              </button>
+            </div>
+
+            {workspaceState.prepPlan ? (
+              <div className="mt-8 space-y-8 border-t border-blueprint-line pt-6">
+                <div>
+                  <p className="text-ui-label text-blueprint-muted">Top Focus Areas</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {workspaceState.prepPlan.focusAreas.map((item) => (
+                      <span key={item} className="rounded-full bg-[#efeded] px-3 py-2 text-ui-label text-primary">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">Expected Round Order</p>
+                    <div className="mt-3 space-y-3">
+                      {workspaceState.prepPlan.interviewPattern.map((step, index) => (
+                        <div key={step} className="flex gap-3">
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#efeded] text-ui-label text-primary">{index + 1}</span>
+                          <p className="text-body-md text-primary">{step}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-4 rounded-xl border border-blueprint-line bg-[#fbf9f9] p-5">
+                    <div>
+                      <p className="text-ui-label text-blueprint-muted">Projects Matter This Much</p>
+                      <p className="mt-2 text-body-md text-primary">{workspaceState.prepPlan.projectRelevance}</p>
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      {[
+                        ['Language', workspaceState.prepPlan.codingExpectation.language],
+                        ['Difficulty', workspaceState.prepPlan.codingExpectation.difficulty],
+                        ['Time Pressure', workspaceState.prepPlan.codingExpectation.timePressure],
+                      ].map(([label, value]) => (
+                        <div key={label}>
+                          <p className="text-ui-label text-blueprint-muted">{label}</p>
+                          <p className="mt-1 text-body-md text-primary">{value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-ui-label text-blueprint-muted">Prep Strategy</p>
+                  <div className="mt-4 grid gap-4 md:grid-cols-3">
+                    {([
+                      ['3-day', '3-Day Plan'],
+                      ['7-day', '7-Day Plan'],
+                      ['30-day', '30-Day Plan'],
+                    ] as const).map(([key, label]) => (
+                      <div key={key} className="rounded-xl border border-blueprint-line bg-[#fbf9f9] p-5">
+                        <h4 className="text-body-lg font-semibold text-primary">{label}</h4>
+                        <div className="mt-4 space-y-3">
+                          {workspaceState.prepPlan?.prepStrategy[key].map((item) => (
+                            <div key={item} className="flex items-start gap-2">
+                              <span className="material-symbols-outlined text-[18px] text-primary">arrow_right_alt</span>
+                              <span className="text-body-md text-blueprint-muted">{item}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="mb-12">
+          <div className="mb-6 flex items-center gap-4">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-blueprint-line bg-[#efeded] text-ui-label text-primary">3</span>
+            <h2 className="text-ui-label text-primary">Project Context</h2>
+          </div>
+          <div className="rounded-xl border border-blueprint-line bg-[#fbf9f9] p-8">
+            <label className="mb-2 block text-ui-label text-blueprint-muted">GitHub Repository</label>
+            <input
+              type="url"
+              value={repositoryUrl}
+              onChange={(event) => setRepositoryUrl(event.target.value)}
+              placeholder="https://github.com/..."
+              className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none transition-colors placeholder:text-[#747878] focus:border-primary"
+            />
+
+            <div className="my-8 flex items-center gap-4">
+              <div className="h-px flex-1 bg-blueprint-line" />
+              <span className="text-ui-label text-blueprint-muted">Or describe it yourself</span>
+              <div className="h-px flex-1 bg-blueprint-line" />
+            </div>
+
+            <label className="mb-2 block text-ui-label text-blueprint-muted">Manual Project Description</label>
+            <textarea
+              rows={4}
+              value={context}
+              onChange={(event) => setContext(event.target.value)}
+              placeholder="Describe what the project does, the stack you used, and the tradeoffs you made..."
+              className="w-full resize-none border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none transition-colors placeholder:text-[#747878] focus:border-primary"
+            />
+
+            <div className="mt-8 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleRepositoryAnalysis}
+                disabled={activeRequest === 'repo'}
+                className="rounded-full border border-blueprint-line bg-white px-6 py-3 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:opacity-60"
+              >
+                {activeRequest === 'repo' ? 'Analyzing Repo...' : 'Analyze Repo'}
+              </button>
+              <button
+                type="button"
+                onClick={handleManualAnalysis}
+                disabled={activeRequest === 'manual'}
+                className="rounded-full border border-blueprint-line bg-white px-6 py-3 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:opacity-60"
+              >
+                {activeRequest === 'manual' ? 'Analyzing Description...' : 'Analyze Description'}
+              </button>
+            </div>
+
+            {projectInsight ? (
+              <div className="mt-8 space-y-8 rounded-xl border border-blueprint-line bg-white/80 p-6">
+                {'projectSummary' in projectInsight ? (
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">Project Summary</p>
+                    <p className="mt-2 text-body-md text-primary">{projectInsight.projectSummary}</p>
+                  </div>
+                ) : null}
+
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">Tech Stack</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {projectInsight.techStack.map((item) => (
+                        <span key={item} className="rounded-full bg-[#efeded] px-3 py-2 text-ui-label text-primary">{item}</span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">What Interviewers Will Ask About</p>
+                    <div className="mt-3 space-y-3">
+                      {('interviewableTopics' in projectInsight ? projectInsight.interviewableTopics : projectInsight.whatInterviewerWillFocus).map((item) => (
+                        <div key={item} className="flex items-start gap-2">
+                          <span className="material-symbols-outlined text-[18px] text-primary">arrow_right_alt</span>
+                          <span className="text-body-md text-blueprint-muted">{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">Likely Weak Points</p>
+                    <div className="mt-3 space-y-3">
+                      {('weakPoints' in projectInsight ? projectInsight.weakPoints : projectInsight.gapsThatMightExist).map((item) => (
+                        <p key={item} className="rounded-lg border border-blueprint-line bg-[#fbf9f9] p-4 text-body-md text-primary">{item}</p>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">Next Talking Points</p>
+                    <div className="mt-3 space-y-3">
+                      {('commonFollowUps' in projectInsight ? projectInsight.commonFollowUps : projectInsight.projectSpecificQuestions).map((item) => (
+                        <p key={item} className="rounded-lg border border-blueprint-line bg-[#fbf9f9] p-4 text-body-md text-primary">{item}</p>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {'improvementSuggestions' in projectInsight ? (
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">Small Improvements Before Interviews</p>
+                    <div className="mt-3 space-y-3">
+                      {projectInsight.improvementSuggestions.map((item) => (
+                        <div key={item} className="flex items-start gap-2">
+                          <span className="material-symbols-outlined text-[18px] text-primary">check_circle</span>
+                          <span className="text-body-md text-blueprint-muted">{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">Assumptions Used</p>
+                    <div className="mt-3 space-y-3">
+                      {workspaceState.manualAnalysis?.assumptions.map((item) => (
+                        <p key={item} className="rounded-lg border border-blueprint-line bg-[#fbf9f9] p-4 text-body-md text-primary">{item}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <ProjectScanner className="mt-8" />
+            )}
+          </div>
+        </section>
+
+        <section>
+          <div className="mb-6 flex items-center gap-4">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-blueprint-line bg-[#efeded] text-ui-label text-primary">4</span>
+            <h2 className="text-ui-label text-primary">Quick Level Check</h2>
+          </div>
+
+          <div className="rounded-xl border border-blueprint-line bg-[#fbf9f9] p-8">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="text-ui-label text-blueprint-muted">Your self-rating</p>
+                <div className="mt-3 flex flex-wrap gap-3">
+                  {Object.entries(EXPERIENCE_LABELS).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setExperienceLevel(id)}
+                      className={`rounded-full px-5 py-2 text-ui-label transition-colors ${experienceLevel === id ? 'bg-primary text-white' : 'border border-blueprint-line bg-white text-blueprint-muted hover:text-primary'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGenerateDiagnostic}
+                disabled={activeRequest === 'diagnostic'}
+                className="rounded-full bg-primary px-6 py-3 text-ui-label text-white transition-colors hover:bg-[#303031] disabled:opacity-60"
+              >
+                {activeRequest === 'diagnostic' ? 'Generating Questions...' : 'Generate Diagnostic'}
+              </button>
+            </div>
+
+            {workspaceState.diagnosticQuestions.length ? (
+              <div className="mt-8 space-y-4 border-t border-blueprint-line pt-6">
+                {workspaceState.diagnosticQuestions.map((question, index) => (
+                  <div key={`${question.question}-${index}`} className="rounded-xl border border-blueprint-line bg-white/80 p-5">
+                    <div className="mb-3 flex flex-wrap items-center gap-3">
+                      <span className="rounded-full bg-[#efeded] px-3 py-1 text-ui-label text-primary">Question {index + 1}</span>
+                      <span className="rounded-full border border-blueprint-line px-3 py-1 text-ui-label text-blueprint-muted">{question.topicTag}</span>
+                      <span className="rounded-full border border-blueprint-line px-3 py-1 text-ui-label text-blueprint-muted">{question.type === 'mcq' ? 'MCQ' : 'True / False'}</span>
+                    </div>
+                    <p className="text-body-md text-primary">{question.question}</p>
+                    {question.options?.length ? (
+                      <div className="mt-4 grid gap-2">
+                        {question.options.map((option) => (
+                          <div key={option} className="rounded-lg border border-blueprint-line bg-[#fbf9f9] px-4 py-3 text-body-md text-blueprint-muted">
+                            {option}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        {errorMessage ? <p className="mt-8 text-body-md text-red-600">{errorMessage}</p> : null}
+        {statusMessage ? <p className="mt-4 text-body-md text-blueprint-muted">{statusMessage}</p> : null}
+
+        <footer className="mt-10 flex flex-col gap-4 border-t border-blueprint-line pt-8 sm:flex-row sm:items-center sm:justify-between">
+          <button type="button" onClick={() => navigate('/signin')} className="text-ui-label text-blueprint-muted transition-colors hover:text-primary">
+            Back
+          </button>
+          <button type="button" onClick={() => navigate('/dashboard')} className="rounded-full bg-primary px-8 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">
+            Continue to Overview
+          </button>
+        </footer>
+      </main>
     </div>
   );
 }

@@ -1,2623 +1,827 @@
-import express from "express";
-import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
-import { createServer as createViteServer } from "vite";
-import path from "path";
-import fs from "node:fs";
-import crypto from "node:crypto";
-import dotenv from "dotenv";
+import cors from 'cors';
+import crypto from 'node:crypto';
+import dotenv from 'dotenv';
+import express from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createServer as createViteServer } from 'vite';
+import db from './src/lib/db.js';
+import { DATABASE_SCHEMA_SQL } from './src/lib/dbSchema.js';
 
-// Load env from AutoMata/.env only.
 const envPath = path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath, override: false });
 }
-import cors from "cors";
-import { v4 as uuidv4 } from "uuid";
-import {
-  buildFallbackSummary,
-  buildFallbackWorkflowDag,
-  WORKFLOW_DAG_SYSTEM_PROMPT,
-  estimateWorkflowRunCostInr,
-  extractJSONObject,
-  normalizeGeneratedWorkflowDag,
-  validateGeneratedWorkflowDag,
-  type GeneratedWorkflowDag,
-} from "./src/lib/serverWorkflowUtils.js";
-import db from "./src/lib/db.js";
-import { DATABASE_SCHEMA_SQL } from "./src/lib/dbSchema.js";
-import runEventBus from "./src/lib/runEvents.js";
-import { requestLlmCompletion } from "./src/lib/llmGateway.js";
-import { registerTool } from "./src/lib/toolRegistry.js";
-import { decryptSecret, encryptSecret } from "./src/lib/tokenCrypto.js";
-import { executeWorkflow, type NodeExecutionEvent } from "./src/lib/workflowExecutor.js";
 
-type SessionUser = {
-  userId: string;
+const SESSION_COOKIE_NAME = 'promptly_session';
+const AUTH_WINDOW_MS = 60_000;
+const AUTH_MAX_REQUESTS = 20;
+
+type DbUserRow = {
+  id: string;
   email: string;
-  workspaceId: string;
-  displayName: string;
-};
-
-type DbTimestamp = string | Date | null | undefined;
-
-type IntegrationProvider = 'gmail' | 'google_sheets' | 'slack' | 'notion';
-
-type IntegrationSource = 'oauth' | 'env';
-
-type IntegrationRow = {
-  provider: string;
-  account: string | null;
-  connected_at: DbTimestamp;
-  source?: IntegrationSource;
-};
-
-const ENV_INTEGRATION_CONFIG: Record<Exclude<IntegrationProvider, 'gmail' | 'google_sheets'>, {
-  tokenEnv: string;
-  accountEnv?: string;
-  fallbackAccount: string;
-}> = {
-  slack: {
-    tokenEnv: 'SLACK_BOT_TOKEN',
-    accountEnv: 'SLACK_BOT_NAME',
-    fallbackAccount: 'Slack Bot (env token)',
-  },
-  notion: {
-    tokenEnv: 'NOTION_TOKEN',
-    accountEnv: 'NOTION_WORKSPACE_NAME',
-    fallbackAccount: 'Notion Integration (env token)',
-  },
-};
-
-type WorkflowRow = {
-  id: string;
-  user_id: string | null;
-  workspace_id: string | null;
   name: string;
-  description: string | null;
-  prompt: string | null;
-  dag: GeneratedWorkflowDag | string | null;
-  status: string;
-  cron_schedule: string | null;
-  estimated_cost_per_run_inr: number | string | null;
-  generation_error: string | null;
-  share_token?: string | null;
-  is_public?: boolean | null;
-  fork_count?: number | string | null;
-  forked_from?: string | null;
-  created_at: DbTimestamp;
-  updated_at: DbTimestamp;
+  password_hash: string;
+  created_at: string;
+  updated_at: string;
 };
 
-type ExtractedMetric = {
-  key: string;
-  value: number;
-  label: string;
+type AuthedRequest = express.Request & {
+  user?: DbUserRow;
 };
 
-type MetricAnomaly = {
-  key: string;
-  current: number;
-  mean: number;
-  stddev: number;
-  direction: 'above' | 'below';
+type UserPreferencesRow = {
+  sidebar_open: boolean | null;
+  theme: string | null;
 };
 
-type TemplateRow = {
-  id: string;
-  name: string;
-  description: string | null;
-  category: string | null;
-  dag: unknown;
-  prompt_text: string | null;
-  estimated_cost_inr: number | string | null;
-  use_count: number | string | null;
-  is_featured: boolean | null;
-  created_at: DbTimestamp;
+type PrepPlanRequestBody = {
+  domain?: string;
+  interviewType?: string;
+  companyType?: string;
+  timeline?: string;
 };
 
-const activeWorkflowGenerations = new Set<string>();
-const activeWorkflowRuns = new Set<string>();
-const cancelledRuns = new Set<string>();
-
-function parseCookies(cookieHeader?: string): Record<string, string> {
-  return (cookieHeader ?? '')
-    .split(';')
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .reduce<Record<string, string>>((acc, part) => {
-      const separatorIndex = part.indexOf('=');
-      if (separatorIndex === -1) return acc;
-      const key = part.slice(0, separatorIndex).trim();
-      const value = part.slice(separatorIndex + 1).trim();
-      acc[key] = decodeURIComponent(value);
-      return acc;
-    }, {});
-}
-
-function getSessionUser(req: express.Request): SessionUser | null {
-  const cookies = parseCookies(req.headers.cookie);
-  const email = String(cookies.automata_session ?? req.headers['x-user-email'] ?? '').trim().toLowerCase();
-  if (!email) return null;
-
-  return {
-    userId: email,
-    email,
-    workspaceId: `workspace:${email}`,
-    displayName: email.split('@')[0] || 'User',
+type PrepPlanResponse = {
+  focusAreas: string[];
+  interviewPattern: string[];
+  projectRelevance: string;
+  codingExpectation: {
+    language: string;
+    difficulty: string;
+    timePressure: string;
   };
+  prepStrategy: {
+    '3-day': string[];
+    '7-day': string[];
+    '30-day': string[];
+  };
+};
+
+type ProjectAnalysisResponse = {
+  projectSummary: string;
+  techStack: string[];
+  keyFeatures: string[];
+  interviewableTopics: string[];
+  commonFollowUps: string[];
+  weakPoints: string[];
+  improvementSuggestions: string[];
+};
+
+type ManualProjectAnalysisResponse = {
+  techStack: string[];
+  likelyArchitecture: string[];
+  whatInterviewerWillFocus: string[];
+  gapsThatMightExist: string[];
+  projectSpecificQuestions: string[];
+  assumptions: string[];
+};
+
+type DiagnosticQuestion = {
+  question: string;
+  type: 'mcq' | 'true_false';
+  options?: string[];
+  correctAnswer: string;
+  topicTag: string;
+};
+
+type ModelConfig =
+  | { provider: 'openai-compat'; apiKey: string; model: string; baseUrl: string }
+  | { provider: 'gemini'; apiKey: string; model: string };
+
+const authBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function isFilledString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
-function toIsoTimestamp(value: DbTimestamp): string | null {
-  if (!value) return null;
-  const date = value instanceof Date ? value : new Date(String(value));
-  if (Number.isNaN(date.getTime())) {
-    return typeof value === 'string' ? value : null;
+function toStringArray(value: unknown, fallback: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean);
+    return items.length ? items : fallback;
   }
-  return date.toISOString();
-}
 
-function parseDag(value: WorkflowRow['dag']): GeneratedWorkflowDag | null {
-  if (!value) return null;
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value) as GeneratedWorkflowDag;
-    } catch {
-      return null;
-    }
+  if (isFilledString(value)) {
+    return value
+      .split(/\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
-  return value as GeneratedWorkflowDag;
+
+  return fallback;
 }
 
-function toJsonParam(value: unknown): string | null {
-  return value == null ? null : JSON.stringify(value);
-}
+function extractJsonPayload(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error('The model returned an empty response.');
+  }
 
-function extractJsonBlock(text: string): string {
-  const trimmed = String(text ?? '').trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) return fenced[1].trim();
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch?.[1]) {
+    return fencedMatch[1].trim();
+  }
+
+  const objectStart = trimmed.indexOf('{');
+  const objectEnd = trimmed.lastIndexOf('}');
+  const arrayStart = trimmed.indexOf('[');
+  const arrayEnd = trimmed.lastIndexOf(']');
+
+  if (arrayStart !== -1 && arrayEnd > arrayStart && (objectStart === -1 || arrayStart < objectStart)) {
+    return trimmed.slice(arrayStart, arrayEnd + 1);
+  }
+
+  if (objectStart !== -1 && objectEnd > objectStart) {
+    return trimmed.slice(objectStart, objectEnd + 1);
+  }
+
   return trimmed;
 }
 
-function parseJsonObject(text: string): Record<string, any> | null {
-  try {
-    const parsed = JSON.parse(extractJsonBlock(text));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseMetricsJson(text: string): ExtractedMetric[] {
-  try {
-    const parsed = JSON.parse(extractJsonBlock(text));
-    if (!Array.isArray(parsed)) return [];
-    return parsed
+function readMessageText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
       .map((item) => {
-        const key = String(item?.key ?? '').trim();
-        const value = Number(item?.value);
-        const label = String(item?.label ?? '').trim();
-        if (!key || !Number.isFinite(value)) return null;
-        return { key, value, label };
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'text' in item) return String((item as { text?: unknown }).text ?? '');
+        return '';
       })
-      .filter((item): item is ExtractedMetric => Boolean(item));
-  } catch {
-    return [];
+      .join('')
+      .trim();
   }
+  return '';
 }
 
-async function ensureDatabaseReady() {
-  await db.exec(DATABASE_SCHEMA_SQL);
-}
-
-async function seedTemplatesIfEmpty() {
-  const row = await db.prepare(`SELECT COUNT(*)::int AS count FROM templates`).get<{ count: number | string }>();
-  const count = Number(row?.count ?? 0);
-  if (count > 0) return;
-
-  const templates: Array<{
-    name: string;
-    category: string;
-    description: string;
-    prompt_text: string;
-    estimated_cost_inr: number;
-    use_count: number;
-  }> = [
-    {
-      name: 'Weekly Sales Report',
-      category: 'sales',
-      description: 'Read your Google Sheet and email a revenue summary every Monday',
-      use_count: 1847,
-      prompt_text: 'Every Monday at 9AM, read my Google Sheet Weekly Sales Tracker with columns Date Product Units Sold Revenue Returns. Summarize last 7 rows total revenue best selling product return rate and email to team@company.com',
-      estimated_cost_inr: 0.024,
-    },
-    {
-      name: 'Lead Auto-Enrich',
-      category: 'marketing',
-      description: 'When new leads appear in your sheet, draft personalized outreach',
-      use_count: 934,
-      prompt_text: 'When new rows appear in Google Sheet New Leads, read the company and name columns, write a personalized outreach email for each lead, and send via Gmail',
-      estimated_cost_inr: 0.038,
-    },
-    {
-      name: 'Client Follow-up',
-      category: 'sales',
-      description: 'Auto-detect stale deals and send follow-ups every Friday',
-      use_count: 712,
-      prompt_text: 'Every Friday at 5PM, read my Google Sheet Pipeline for rows with no update in 7 days, write a polite follow-up email for each, send via Gmail',
-      estimated_cost_inr: 0.031,
-    },
-    {
-      name: 'Monthly Board Summary',
-      category: 'operations',
-      description: 'Pull monthly metrics and create a Notion executive brief',
-      use_count: 445,
-      prompt_text: 'On the 1st of every month at 8AM, read last months data from Google Sheet Monthly Metrics, write a 300 word executive summary, create a Notion page titled Monthly Board Update',
-      estimated_cost_inr: 0.052,
-    },
-    {
-      name: 'Invoice Reminder',
-      category: 'finance',
-      description: 'Auto-detect unpaid invoices and send reminders weekly',
-      use_count: 398,
-      prompt_text: 'Every Monday, read Google Sheet Invoices for rows where Status is Unpaid and Due Date is past, send a polite payment reminder email to the client email column for each row',
-      estimated_cost_inr: 0.028,
-    },
-    {
-      name: 'Slack Daily Digest',
-      category: 'operations',
-      description: 'Post a daily workflow activity digest to your Slack channel',
-      use_count: 301,
-      prompt_text: 'Every weekday at 9AM, summarize yesterday workflow activity and what ran successfully, post digest to Slack default channel',
-      estimated_cost_inr: 0.019,
-    },
-  ];
-
-  for (const template of templates) {
-    await db.prepare(`
-      INSERT INTO templates (id, name, description, category, dag, prompt_text, estimated_cost_inr, use_count, is_featured, created_at)
-      VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, FALSE, NOW())
-    `).run(
-      uuidv4(),
-      template.name,
-      template.description,
-      template.category,
-      JSON.stringify(null),
-      template.prompt_text,
-      template.estimated_cost_inr,
-      template.use_count,
-    );
-  }
-}
-
-async function ensureUserWorkspace(user: SessionUser) {
-  await db.prepare(`
-    INSERT INTO workspaces (id, name)
-    VALUES (?, ?)
-    ON CONFLICT (id) DO NOTHING
-  `).run(
-    user.workspaceId,
-    `${user.displayName}'s Workspace`,
-  );
-
-  await db.prepare(`
-    INSERT INTO users (id, workspace_id, email, name, role, updated_at)
-    VALUES (?, ?, ?, ?, ?, NOW())
-    ON CONFLICT (id) DO UPDATE SET
-      workspace_id = EXCLUDED.workspace_id,
-      email = EXCLUDED.email,
-      name = COALESCE(users.name, EXCLUDED.name),
-      role = COALESCE(users.role, EXCLUDED.role),
-      updated_at = NOW()
-  `).run(
-    user.userId,
-    user.workspaceId,
-    user.email,
-    user.displayName,
-    'owner',
-  );
-}
-
-function getOAuthStateSecret(): string {
-  return (process.env.ENCRYPTION_KEY || process.env.JWT_SECRET || 'automata-dev-state-secret').trim();
-}
-
-function signOAuthState(payload: Record<string, unknown>): string {
-  const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signature = crypto
-    .createHmac('sha256', getOAuthStateSecret())
-    .update(body)
-    .digest('base64url');
-  return `${body}.${signature}`;
-}
-
-function verifyOAuthState(token: string): Record<string, unknown> | null {
-  const [body, signature] = String(token ?? '').split('.');
-  if (!body || !signature) return null;
-
-  const expected = crypto
-    .createHmac('sha256', getOAuthStateSecret())
-    .update(body)
-    .digest('base64url');
-
-  if (signature.length !== expected.length) {
-    return null;
-  }
-
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeProviderFromRoute(provider: string): IntegrationProvider | null {
-  const normalized = provider.trim().toLowerCase();
-  if (normalized === 'gmail' || normalized === 'google_sheets' || normalized === 'google') {
-    return normalized === 'google' ? 'gmail' : normalized;
-  }
-  if (normalized === 'slack') return 'slack';
-  if (normalized === 'notion') return 'notion';
-  return null;
-}
-
-function isGoogleProvider(provider: string): provider is 'gmail' | 'google_sheets' {
-  return provider === 'gmail' || provider === 'google_sheets';
-}
-
-function isEnvManagedProvider(provider: string): provider is 'slack' | 'notion' {
-  return provider === 'slack' || provider === 'notion';
-}
-
-function getEnvTokenForProvider(provider: string): string | null {
-  if (!isEnvManagedProvider(provider)) return null;
-  const key = ENV_INTEGRATION_CONFIG[provider].tokenEnv;
-  const token = process.env[key]?.trim();
-  return token || null;
-}
-
-function getEnvAccountForProvider(provider: string): string {
-  if (!isEnvManagedProvider(provider)) return 'Configured integration';
-  const config = ENV_INTEGRATION_CONFIG[provider];
-  const explicit = config.accountEnv ? process.env[config.accountEnv]?.trim() : '';
-  return explicit || config.fallbackAccount;
-}
-
-function encodeEmail(to: string[] | string, subject: string, body: string): string {
-  const toHeader = Array.isArray(to) ? to.join(', ') : to;
-  const email = [
-    `To: ${toHeader}`,
-    `Subject: ${subject}`,
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    body,
-  ].join('\n');
-
-  return Buffer.from(email)
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '');
-}
-
-function toRecipientList(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.map((entry) => String(entry).trim()).filter(Boolean);
-  }
-  const text = String(value ?? '').trim();
-  if (!text) return [];
-  return text.split(',').map((entry) => entry.trim()).filter(Boolean);
-}
-
-function serializeWorkflowRow(row: WorkflowRow | undefined | null) {
-  if (!row) return null;
-  const dag = parseDag(row.dag);
+function normalizePrepPlanResponse(payload: unknown): PrepPlanResponse {
+  const source = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  const codingExpectation = source.codingExpectation && typeof source.codingExpectation === 'object'
+    ? source.codingExpectation as Record<string, unknown>
+    : {};
+  const prepStrategy = source.prepStrategy && typeof source.prepStrategy === 'object'
+    ? source.prepStrategy as Record<string, unknown>
+    : {};
 
   return {
-    id: row.id,
-    userId: row.user_id,
-    workspaceId: row.workspace_id,
-    name: row.name,
-    description: row.description ?? '',
-    prompt: row.prompt ?? '',
-    dag,
-    status: row.status,
-    cronSchedule: row.cron_schedule,
-    estimatedCostPerRunInr: Number(row.estimated_cost_per_run_inr ?? 0),
-    generationError: row.generation_error,
-    shareToken: row.share_token ?? null,
-    isPublic: Boolean(row.is_public),
-    forkCount: Number(row.fork_count ?? 0),
-    forkedFrom: row.forked_from ?? null,
-    createdAt: toIsoTimestamp(row.created_at),
-    updatedAt: toIsoTimestamp(row.updated_at ?? row.created_at),
-    created_at: toIsoTimestamp(row.created_at),
-    updated_at: toIsoTimestamp(row.updated_at ?? row.created_at),
+    focusAreas: toStringArray(source.focusAreas).slice(0, 7),
+    interviewPattern: toStringArray(source.interviewPattern),
+    projectRelevance: String(source.projectRelevance ?? '').trim(),
+    codingExpectation: {
+      language: String(codingExpectation.language ?? '').trim(),
+      difficulty: String(codingExpectation.difficulty ?? '').trim(),
+      timePressure: String(codingExpectation.timePressure ?? '').trim(),
+    },
+    prepStrategy: {
+      '3-day': toStringArray(prepStrategy['3-day']),
+      '7-day': toStringArray(prepStrategy['7-day']),
+      '30-day': toStringArray(prepStrategy['30-day']),
+    },
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return promise;
+function normalizeProjectAnalysisResponse(payload: unknown): ProjectAnalysisResponse {
+  const source = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  return {
+    projectSummary: String(source.projectSummary ?? '').trim(),
+    techStack: toStringArray(source.techStack),
+    keyFeatures: toStringArray(source.keyFeatures),
+    interviewableTopics: toStringArray(source.interviewableTopics),
+    commonFollowUps: toStringArray(source.commonFollowUps),
+    weakPoints: toStringArray(source.weakPoints),
+    improvementSuggestions: toStringArray(source.improvementSuggestions),
+  };
+}
+
+function normalizeManualProjectAnalysisResponse(payload: unknown): ManualProjectAnalysisResponse {
+  const source = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  return {
+    techStack: toStringArray(source.techStack),
+    likelyArchitecture: toStringArray(source.likelyArchitecture),
+    whatInterviewerWillFocus: toStringArray(source.whatInterviewerWillFocus),
+    gapsThatMightExist: toStringArray(source.gapsThatMightExist),
+    projectSpecificQuestions: toStringArray(source.projectSpecificQuestions),
+    assumptions: toStringArray(source.assumptions),
+  };
+}
+
+function normalizeDiagnosticQuestions(payload: unknown): DiagnosticQuestion[] {
+  if (!Array.isArray(payload)) return [];
+
+  return payload
+    .map((item) => {
+      const source = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const type = String(source.type ?? '').trim().toLowerCase() === 'true_false' ? 'true_false' : 'mcq';
+      return {
+        question: String(source.question ?? '').trim(),
+        type,
+        options: type === 'mcq' ? toStringArray(source.options) : undefined,
+        correctAnswer: String(source.correctAnswer ?? '').trim(),
+        topicTag: String(source.topicTag ?? '').trim(),
+      } satisfies DiagnosticQuestion;
+    })
+    .filter((question) => question.question && question.correctAnswer && question.topicTag);
+}
+
+function resolveModelConfig(): ModelConfig {
+  const compatBaseUrl = process.env.OPENAI_COMPAT_BASE_URL?.trim();
+  const compatApiKey = process.env.OPENAI_API_KEY?.trim() || process.env.ANTHROPIC_API_KEY?.trim();
+  if (compatBaseUrl && compatApiKey) {
+    return {
+      provider: 'openai-compat',
+      apiKey: compatApiKey,
+      baseUrl: compatBaseUrl.replace(/\/$/, ''),
+      model: process.env.PREP_MODEL?.trim()
+        || process.env.INTERVIEW_ANALYST_MODEL?.trim()
+        || process.env.WORKFLOW_SUMMARY_MODEL?.trim()
+        || process.env.ANTHROPIC_MODEL?.trim()
+        || 'deepseek/deepseek-chat',
+    };
   }
 
-  return await Promise.race([
-    promise,
-    new Promise<T>((_, reject) => {
-      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-    }),
-  ]);
-}
-
-function writeSSE(res: express.Response, event: string, data: unknown) {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
-
-async function getWorkflowById(workflowId: string) {
-  return await db.prepare(`SELECT * FROM workflows WHERE id = ?`).get<WorkflowRow>(workflowId);
-}
-
-async function getOwnedWorkflow(workflowId: string, user: SessionUser) {
-  return await db.prepare(`SELECT * FROM workflows WHERE id = ? AND user_id = ?`).get<WorkflowRow>(workflowId, user.userId);
-}
-
-async function startServer() {
-  await ensureDatabaseReady();
-  await seedTemplatesIfEmpty();
-
-  const app = express();
-  const preferredPort = Number(process.env.PORT) || 3000;
-  const host = process.env.HOST || "0.0.0.0";
-  const server = createHttpServer(app);
-
-  app.use(cors());
-  app.use(express.json());
-
-  const requireSession = async (req: express.Request, res: express.Response) => {
-    const user = getSessionUser(req);
-    if (!user) {
-      res.status(401).json({ error: 'Authentication required.' });
-      return null;
-    }
-    await ensureUserWorkspace(user);
-    return user;
-  };
-
-  const getHaikuModel = () =>
-    process.env.HAIKU_MODEL?.trim()
-    || process.env.WORKFLOW_HAIKU_MODEL?.trim()
-    || process.env.TERMINAL_MODEL?.trim()
-    || process.env.ANTHROPIC_MODEL?.trim()
-    || 'claude-haiku-4-5';
-
-  const searchWorkflowMemories = async (userId: string, query: string, workflowId?: string | null) => {
-    const q = String(query ?? '').trim();
-    if (!q) return [];
-    const likePattern = `%${q.replace(/[%_]/g, '\\$&')}%`;
-    if (workflowId) {
-      return db.prepare(`
-        SELECT wm.content, wm.metric_key, wm.metric_value, wm.created_at, w.name AS workflow_name
-        FROM workflow_memories wm
-        INNER JOIN workflows w ON w.id = wm.workflow_id
-        WHERE wm.user_id = ? AND wm.workflow_id = ? AND wm.content ILIKE ? ESCAPE '\\'
-        ORDER BY wm.created_at DESC
-        LIMIT 10
-      `).all<{ content: string | null; metric_key: string | null; metric_value: number | string | null; created_at: DbTimestamp; workflow_name: string | null }>(
-        userId,
-        workflowId,
-        likePattern,
-      );
-    }
-    return db.prepare(`
-      SELECT wm.content, wm.metric_key, wm.metric_value, wm.created_at, w.name AS workflow_name
-      FROM workflow_memories wm
-      INNER JOIN workflows w ON w.id = wm.workflow_id
-      WHERE wm.user_id = ? AND wm.content ILIKE ? ESCAPE '\\'
-      ORDER BY wm.created_at DESC
-      LIMIT 10
-    `).all<{ content: string | null; metric_key: string | null; metric_value: number | string | null; created_at: DbTimestamp; workflow_name: string | null }>(
-      userId,
-      likePattern,
-    );
-  };
-
-  const extractMetricsFromText = async (text: string): Promise<ExtractedMetric[]> => {
-    const raw = String(text ?? '').trim();
-    if (!raw) return [];
-    try {
-      const response = await requestLlmCompletion({
-        model: getHaikuModel(),
-        maxTokens: 100,
-        temperature: 0,
-        system: "Extract all numeric business metrics from this text. Return ONLY JSON array: [{key: string, value: number, label: string}]. If none found return [].",
-        user: raw,
-      });
-      return parseMetricsJson(response.text);
-    } catch {
-      return [];
-    }
-  };
-
-  const detectAnomalies = async (
-    workflowId: string,
-    userId: string | null,
-    runId: string,
-    currentMetrics: ExtractedMetric[],
-  ): Promise<MetricAnomaly[]> => {
-    if (!userId) return [];
-    const anomalies: MetricAnomaly[] = [];
-    for (const metric of currentMetrics) {
-      const rows = await db.prepare(`
-        SELECT metric_value
-        FROM workflow_memories
-        WHERE workflow_id = ? AND user_id = ? AND metric_key = ? AND metric_value IS NOT NULL AND run_id <> ?
-        ORDER BY created_at DESC
-        LIMIT 10
-      `).all<{ metric_value: number | string | null }>(workflowId, userId, metric.key, runId);
-      const values = rows
-        .map((row) => Number(row.metric_value))
-        .filter((value) => Number.isFinite(value));
-      if (values.length < 3) continue;
-      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-      const variance = values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / values.length;
-      const stddev = Math.sqrt(variance);
-      if (stddev === 0) continue;
-      const upper = mean + (2 * stddev);
-      const lower = mean - (2 * stddev);
-      if (metric.value > upper) {
-        anomalies.push({ key: metric.key, current: metric.value, mean, stddev, direction: 'above' });
-      } else if (metric.value < lower) {
-        anomalies.push({ key: metric.key, current: metric.value, mean, stddev, direction: 'below' });
-      }
-    }
-    return anomalies;
-  };
-
-  const formatAnomalyAlerts = (anomalies: MetricAnomaly[]): string => {
-    if (!anomalies.length) return '';
-    return anomalies.map((anomaly) => {
-      const deltaPct = anomaly.mean === 0 ? 0 : Math.abs(((anomaly.current - anomaly.mean) / anomaly.mean) * 100);
-      return `\n\n⚠️ AutoMata Alert: ${anomaly.key} is ${deltaPct.toFixed(1)}% ${anomaly.direction} recent average (${anomaly.mean.toFixed(2)} avg, current: ${anomaly.current.toFixed(2)})`;
-    }).join('');
-  };
-
-  const upsertIntegration = async (
-    userId: string,
-    workspaceId: string,
-    provider: IntegrationProvider,
-    accessToken: string,
-    refreshToken: string | null,
-    expiresAt: string | null,
-    accountName: string,
-  ) => {
-    const existing = await db.prepare(`
-      SELECT id
-      FROM integrations
-      WHERE workspace_id = ? AND provider = ?
-      LIMIT 1
-    `).get<{ id: string }>(workspaceId, provider);
-
-    if (existing) {
-      await db.prepare(`
-        UPDATE integrations
-        SET user_id = ?, access_token = ?, refresh_token = ?, expires_at = ?::timestamptz, account_name = ?, enabled = TRUE, connected_at = NOW()
-        WHERE id = ?
-      `).run(userId, accessToken, refreshToken, expiresAt, accountName, existing.id);
-    } else {
-      await db.prepare(`
-        INSERT INTO integrations (id, user_id, workspace_id, provider, access_token, refresh_token, account_name, expires_at, enabled, connected_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?::timestamptz, TRUE, NOW())
-      `).run(uuidv4(), userId, workspaceId, provider, accessToken, refreshToken, accountName, expiresAt);
-    }
-  };
-
-  const loadIntegrationToken = async (workspaceId: string, provider: string) => {
-    const row = await db.prepare(`
-      SELECT access_token, refresh_token, expires_at
-      FROM integrations
-      WHERE workspace_id = ? AND provider = ? AND enabled = TRUE
-      ORDER BY connected_at DESC
-      LIMIT 1
-    `).get<{ access_token: string | null; refresh_token: string | null; expires_at: DbTimestamp }>(workspaceId, provider);
-
-    if (!row?.access_token) return null;
-
+  const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+  if (geminiApiKey) {
     return {
-      accessToken: decryptSecret(row.access_token),
-      refreshToken: row.refresh_token ? decryptSecret(row.refresh_token) : null,
-      expiresAt: toIsoTimestamp(row.expires_at),
+      provider: 'gemini',
+      apiKey: geminiApiKey,
+      model: process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash',
     };
-  };
+  }
 
-  const resolveIntegrationToken = async (workspaceId: string, provider: string) => {
-    const normalizedProvider = normalizeProviderFromRoute(provider) ?? provider;
-    const dbToken = await loadIntegrationToken(workspaceId, normalizedProvider);
-    if (dbToken) return dbToken;
+  throw new Error('No compatible LLM provider is configured for prep analysis.');
+}
 
-    const envToken = getEnvTokenForProvider(normalizedProvider);
-    if (envToken) {
-      return {
-        accessToken: envToken,
-        refreshToken: null,
-        expiresAt: null,
-      };
-    }
+async function callStructuredModel<T>(systemPrompt: string, userPrompt: string, normalize: (payload: unknown) => T): Promise<{ result: T; provider: string; model: string }> {
+  const config = resolveModelConfig();
 
-    return null;
-  };
-
-  const refreshGoogleToken = async (
-    workspaceId: string,
-    provider: 'gmail' | 'google_sheets',
-    refreshToken: string,
-  ) => {
-    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-      throw new Error('Google OAuth is not configured. Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET.');
-    }
-
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: process.env.GOOGLE_CLIENT_ID,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET,
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-      }),
-    });
-
-    if (!response.ok) {
-      const details = await response.text();
-      throw new Error(`Token refresh failed (${response.status}): ${details}`);
-    }
-
-    const payload = await response.json() as { access_token: string; expires_in?: number };
-    const expiresAt = payload.expires_in
-      ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
-      : null;
-
-    await db.prepare(`
-      UPDATE integrations
-      SET access_token = ?, expires_at = ?::timestamptz
-      WHERE workspace_id = ? AND provider = ?
-    `).run(
-      encryptSecret(payload.access_token),
-      expiresAt,
-      workspaceId,
-      provider,
-    );
-
-    return {
-      accessToken: payload.access_token,
-      expiresAt,
-    };
-  };
-
-  const registerAliases = (aliases: string[], provider: IntegrationProvider, execute: (params: Record<string, any>, accessToken: string) => Promise<any>) => {
-    for (const alias of aliases) {
-      registerTool(alias, { provider, execute });
-    }
-  };
-
-  registerAliases(['send_email', 'email.send', 'gmail.send'], 'gmail', async (params, accessToken) => {
-    const to = toRecipientList(params.to ?? params.recipients ?? params.email);
-    if (to.length === 0) {
-      throw new Error('send_email requires at least one recipient.');
-    }
-
-    const subject = String(params.subject ?? 'Automata Notification');
-    const body = String(params.body ?? params.message ?? '');
-
-    const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+  let rawText = '';
+  if (config.provider === 'openai-compat') {
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({ raw: encodeEmail(to, subject, body) }),
-    });
-
-    if (!response.ok) {
-      const details = await response.text();
-      throw new Error(`Gmail send failed (${response.status}): ${details}`);
-    }
-
-    const payload = await response.json() as { id?: string };
-    return {
-      messageId: payload.id ?? null,
-      status: 'sent',
-      to,
-      subject,
-    };
-  });
-
-  registerAliases(['read_range', 'read_rows', 'read_google_sheet', 'google_sheets.read', 'google_sheets_read'], 'google_sheets', async (params, accessToken) => {
-    const range = String(params.range ?? 'A:Z');
-    const lastNRows = Number(params.last_n_rows ?? params.lastNRows ?? 0);
-    let spreadsheetId = String(params.spreadsheet_id ?? '').trim();
-
-    if (!spreadsheetId) {
-      const spreadsheetName = String(params.spreadsheet_name ?? params.spreadsheet ?? '').trim();
-      if (!spreadsheetName) {
-        throw new Error('read_range requires spreadsheet_id or spreadsheet_name.');
-      }
-
-      const query = `name='${spreadsheetName.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.spreadsheet'`;
-      const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)&pageSize=1`;
-
-      const searchRes = await fetch(searchUrl, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!searchRes.ok) {
-        const details = await searchRes.text();
-        throw new Error(`Drive lookup failed (${searchRes.status}): ${details}`);
-      }
-
-      const searchData = await searchRes.json() as { files?: Array<{ id: string }> };
-      if (!searchData.files?.length) {
-        throw new Error(`Spreadsheet not found: ${spreadsheetName}`);
-      }
-      spreadsheetId = searchData.files[0].id;
-    }
-
-    const valuesUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`;
-    const valuesRes = await fetch(valuesUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!valuesRes.ok) {
-      const details = await valuesRes.text();
-      throw new Error(`Sheets read failed (${valuesRes.status}): ${details}`);
-    }
-
-    const valuesData = await valuesRes.json() as { values?: string[][] };
-    const allRows = valuesData.values ?? [];
-    const headers = allRows[0] ?? [];
-    const dataRows = allRows.slice(1);
-    const rows = Number.isFinite(lastNRows) && lastNRows > 0
-      ? dataRows.slice(-lastNRows)
-      : dataRows;
-
-    return {
-      headers,
-      rows,
-      row_count: rows.length,
-      spreadsheet_id: spreadsheetId,
-      range,
-    };
-  });
-
-  registerAliases(['send_slack_message', 'slack.send', 'post_slack_message', 'post_message', 'slack.post_message'], 'slack', async (params, accessToken) => {
-    const channel = String(params.channel ?? params.channel_id ?? process.env.SLACK_DEFAULT_CHANNEL ?? '').trim();
-    const fallbackChannel = String(process.env.SLACK_DEFAULT_CHANNEL ?? '').trim();
-    const text = String(params.text ?? params.message ?? '').trim();
-
-    if (!channel) {
-      throw new Error('Slack message requires channel.');
-    }
-    if (!text) {
-      throw new Error('Slack message requires text.');
-    }
-
-    const postSlackMessage = async (targetChannel: string) => {
-      const response = await fetch('https://slack.com/api/chat.postMessage', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          channel: targetChannel,
-          text,
-          unfurl_links: false,
-        }),
-      });
-
-      const payload = await response.json() as {
-        ok?: boolean;
-        error?: string;
-        ts?: string;
-        channel?: string;
-      };
-
-      return { response, payload };
-    };
-
-    let attemptedChannel = channel;
-    let { response, payload } = await postSlackMessage(channel);
-
-    if ((!response.ok || !payload.ok) && payload.error === 'channel_not_found' && fallbackChannel && fallbackChannel !== channel) {
-      attemptedChannel = fallbackChannel;
-      ({ response, payload } = await postSlackMessage(fallbackChannel));
-    }
-
-    if (!response.ok || !payload.ok) {
-      throw new Error(`Slack error: ${payload.error ?? `HTTP ${response.status}`}`);
-    }
-
-    return {
-      messageId: payload.ts ?? null,
-      channel: payload.channel ?? attemptedChannel,
-      status: 'sent',
-    };
-  });
-
-  registerAliases(['create_notion_page', 'notion.create_page', 'notion.create'], 'notion', async (params, accessToken) => {
-    const notionVersion = process.env.NOTION_VERSION?.trim() || '2022-06-28';
-    const headers = {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      'Notion-Version': notionVersion,
-    };
-
-    const title = String(params.title ?? params.name ?? 'Automata Update').trim();
-    const content = String(params.content ?? params.body ?? params.text ?? '').trim();
-    const explicitParentType = String(params.parent_type ?? '').trim().toLowerCase();
-    const pageParentId = String(params.parent_id ?? params.page_id ?? '').trim();
-    const databaseId = String(params.database_id ?? process.env.NOTION_DATABASE_ID ?? '').trim();
-
-    let parent: Record<string, string>;
-    const properties: Record<string, unknown> = {};
-
-    if (databaseId && explicitParentType !== 'page') {
-      let usePageParent = false;
-      let titleProperty = 'Name';
-      const databaseResponse = await fetch(`https://api.notion.com/v1/databases/${encodeURIComponent(databaseId)}`, {
-        method: 'GET',
-        headers,
-      });
-
-      if (databaseResponse.ok) {
-        const databasePayload = await databaseResponse.json() as {
-          properties?: Record<string, { type?: string }>;
-        };
-        for (const [propertyName, definition] of Object.entries(databasePayload.properties ?? {})) {
-          if (definition?.type === 'title') {
-            titleProperty = propertyName;
-            break;
-          }
-        }
-      } else {
-        const databaseError = await databaseResponse.json().catch(() => null) as { message?: string } | null;
-        const message = String(databaseError?.message ?? '').toLowerCase();
-        if (message.includes('is a page') || message.includes('page, not a database')) {
-          usePageParent = true;
-        }
-      }
-
-      if (usePageParent) {
-        parent = { page_id: databaseId };
-        properties.title = {
-          title: [{ type: 'text', text: { content: title } }],
-        };
-      } else {
-        parent = { database_id: databaseId };
-        properties[titleProperty] = {
-          title: [{ type: 'text', text: { content: title } }],
-        };
-      }
-    } else if (pageParentId) {
-      parent = { page_id: pageParentId };
-      properties.title = {
-        title: [{ type: 'text', text: { content: title } }],
-      };
-    } else {
-      throw new Error('Notion page requires parent_id/page_id or NOTION_DATABASE_ID.');
-    }
-
-    const children = content
-      ? [{
-          object: 'block',
-          type: 'paragraph',
-          paragraph: {
-            rich_text: [{ type: 'text', text: { content } }],
-          },
-        }]
-      : [];
-
-    const response = await fetch('https://api.notion.com/v1/pages', {
-      method: 'POST',
-      headers,
       body: JSON.stringify({
-        parent,
-        properties,
-        children,
+        model: config.model,
+        temperature: 0.2,
+        max_tokens: 1600,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
       }),
     });
 
-    const payload = await response.json() as {
-      object?: string;
-      message?: string;
-      id?: string;
-      url?: string;
+    const data = await response.json().catch(() => ({})) as {
+      error?: { message?: string };
+      choices?: Array<{ message?: { content?: unknown } }>;
     };
-
-    if (!response.ok || payload.object === 'error') {
-      throw new Error(`Notion error: ${payload.message ?? `HTTP ${response.status}`}`);
+    if (!response.ok) {
+      throw new Error(String(data.error?.message ?? 'Prep analysis request failed.'));
     }
 
-    return {
-      pageId: payload.id ?? null,
-      url: payload.url ?? null,
-      status: 'created',
-    };
-  });
-
-  const emitWorkflowGenerationEvent = (workflowId: string, event: string, data: unknown) => {
-    runEventBus.emit(`workflow:${workflowId}`, { event, data });
-  };
-
-  const emitRunEvent = (runId: string, event: string, data: unknown) => {
-    runEventBus.emit(`run:${runId}`, { event, data });
-  };
-
-  const runWorkflowGeneration = async (workflowId: string) => {
-    if (activeWorkflowGenerations.has(workflowId)) return;
-    activeWorkflowGenerations.add(workflowId);
-
-    try {
-      const workflow = await getWorkflowById(workflowId);
-      if (!workflow) throw new Error('Workflow not found.');
-      const prompt = workflow.prompt?.trim();
-      if (!prompt) throw new Error('Workflow prompt is missing.');
-
-      const hasAnthropicKey = Boolean(process.env.ANTHROPIC_API_KEY?.trim());
-      const summaryModel = process.env.WORKFLOW_SUMMARY_MODEL?.trim() || process.env.ANTHROPIC_MODEL?.trim() || 'claude-haiku-4-5';
-      const dagModel = process.env.WORKFLOW_DAG_MODEL?.trim() || process.env.ANTHROPIC_MODEL?.trim() || 'claude-sonnet-4-20250514';
-      const llmTimeoutMs = Number(process.env.WORKFLOW_LLM_TIMEOUT_MS ?? 45000);
-
-      let name = String(workflow.name ?? 'Generated Workflow').trim().slice(0, 80) || 'Generated Workflow';
-      let description = String(workflow.description ?? '').trim();
-
-      if (hasAnthropicKey) {
-        try {
-          const summaryMessage = await withTimeout(
-            requestLlmCompletion({
-              model: summaryModel,
-              maxTokens: 60,
-              temperature: 0,
-              system: 'Extract a short workflow name (max 6 words) and one sentence description from this workflow description. Return only JSON: { "name": string, "description": string }',
-              user: prompt,
-            }),
-            llmTimeoutMs,
-            'Workflow summary generation',
-          );
-
-          const summaryText = summaryMessage.text;
-          const summary = extractJSONObject(summaryText) as { name?: string; description?: string };
-          name = String(summary.name ?? name).trim().slice(0, 80) || 'Generated Workflow';
-          description = String(summary.description ?? description).trim();
-        } catch {
-          const fallbackSummary = buildFallbackSummary(prompt);
-          name = String(fallbackSummary.name ?? name).trim().slice(0, 80) || 'Generated Workflow';
-          description = String(fallbackSummary.description ?? description).trim();
-        }
-      } else {
-        const fallbackSummary = buildFallbackSummary(prompt);
-        name = String(fallbackSummary.name ?? name).trim().slice(0, 80) || 'Generated Workflow';
-        description = String(fallbackSummary.description ?? description).trim();
-      }
-
-      await db.prepare(`
-        UPDATE workflows
-        SET name = ?, description = ?, updated_at = NOW()
-        WHERE id = ?
-      `).run(name, description, workflowId);
-
-      emitWorkflowGenerationEvent(workflowId, 'phase', {
-        phase: 'named',
-        name,
-        description,
-      });
-
-      let dag: GeneratedWorkflowDag;
-      let usedFallback = false;
-
-      if (hasAnthropicKey) {
-        try {
-          const dagResponse = await withTimeout(
-            requestLlmCompletion({
-              model: dagModel,
-              maxTokens: 2000,
-              temperature: 0.2,
-              system: WORKFLOW_DAG_SYSTEM_PROMPT,
-              user: prompt,
-            }),
-            llmTimeoutMs,
-            'Workflow DAG generation',
-          );
-
-          const rawDag = dagResponse.text;
-          for (let index = 0; index < rawDag.length; index += 160) {
-            emitWorkflowGenerationEvent(workflowId, 'token', { token: rawDag.slice(index, index + 160) });
-          }
-
-          dag = normalizeGeneratedWorkflowDag(extractJSONObject(rawDag));
-          dag.workflow_name = name;
-          if (!dag.description) dag.description = description;
-        } catch (generationError) {
-          usedFallback = true;
-          const reason = generationError instanceof Error ? generationError.message : 'Generation provider unavailable.';
-          emitWorkflowGenerationEvent(workflowId, 'phase', {
-            phase: 'fallback',
-            reason,
-          });
-          dag = buildFallbackWorkflowDag(prompt, name, description);
-        }
-      } else {
-        usedFallback = true;
-        emitWorkflowGenerationEvent(workflowId, 'phase', {
-          phase: 'fallback',
-          reason: 'ANTHROPIC_API_KEY is not configured.',
-        });
-        dag = buildFallbackWorkflowDag(prompt, name, description);
-      }
-
-      const configuredExecModel = process.env.WORKFLOW_EXEC_MODEL?.trim() || process.env.ANTHROPIC_MODEL?.trim();
-      if (configuredExecModel) {
-        for (const node of dag.nodes) {
-          if (node.type === 'llm_call' || node.type === 'evaluator') {
-            node.config = {
-              ...(node.config ?? {}),
-              model: configuredExecModel,
-            };
-          }
-        }
-      }
-
-      validateGeneratedWorkflowDag(dag);
-      emitWorkflowGenerationEvent(workflowId, 'phase', {
-        phase: 'validated',
-        nodeCount: dag.nodes.length,
-        edgeCount: dag.edges.length,
-      });
-
-      const { estimatedCostPerRunInr, breakdown } = estimateWorkflowRunCostInr(dag);
-      emitWorkflowGenerationEvent(workflowId, 'phase', {
-        phase: 'costed',
-        estimatedCostPerRunInr,
-      });
-
-      await db.prepare(`
-        UPDATE workflows
-        SET name = ?, description = ?, dag = ?::jsonb, status = 'ready', estimated_cost_per_run_inr = ?, generation_error = NULL, updated_at = NOW()
-        WHERE id = ?
-      `).run(name, dag.description || description, toJsonParam(dag), estimatedCostPerRunInr, workflowId);
-
-      emitWorkflowGenerationEvent(workflowId, 'complete', {
-        workflowId,
-        name,
-        description: dag.description || description,
-        dag,
-        estimatedCostPerRunInr,
-        costBreakdown: breakdown,
-        usedFallback,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Workflow generation failed.';
-      await db.prepare(`
-        UPDATE workflows
-        SET status = 'failed', generation_error = ?, updated_at = NOW()
-        WHERE id = ?
-      `).run(message, workflowId);
-      emitWorkflowGenerationEvent(workflowId, 'error', { message });
-    } finally {
-      activeWorkflowGenerations.delete(workflowId);
-    }
-  };
-
-  const runWorkflowExecution = async (workflowId: string, runId: string) => {
-    if (activeWorkflowRuns.has(runId)) return;
-    activeWorkflowRuns.add(runId);
-
-    const nodeExecutionIds = new Map<string, string>();
-    const startedAt = Date.now();
-    const runAnomalies: MetricAnomaly[] = [];
-    const seenAnomalyKeys = new Set<string>();
-    let hasEmailNode = false;
-    const pendingMemories: Array<{ content: string; metrics: ExtractedMetric[] }> = [];
-
-    try {
-      const workflow = await getWorkflowById(workflowId);
-      if (!workflow) throw new Error('Workflow not found.');
-      const dag = parseDag(workflow.dag) ?? { nodes: [], edges: [] };
-      const workspaceId = workflow.workspace_id ?? `workspace:${workflow.user_id ?? 'anonymous'}`;
-      hasEmailNode = dag.nodes.some((node) => node.type === 'tool_call' && String(node.config?.tool_name ?? '').toLowerCase().includes('send_email'));
-
-      const result = await executeWorkflow(dag, runId, {
-        shouldStop: () => cancelledRuns.has(runId),
-        resolveIntegration: async (provider: string) => {
-          return resolveIntegrationToken(workspaceId, provider);
-        },
-        refreshIntegrationToken: async (provider: string, refreshToken: string) => {
-          const normalizedProvider = normalizeProviderFromRoute(provider);
-          if (!normalizedProvider || !isGoogleProvider(normalizedProvider)) {
-            throw new Error(`Token refresh is not supported for provider: ${provider}`);
-          }
-          return refreshGoogleToken(workspaceId, normalizedProvider, refreshToken);
-        },
-        transformToolParams: async (node, params) => {
-          if (node.type !== 'tool_call') return params;
-          const toolName = String(node.config?.tool_name ?? '').toLowerCase();
-          if (!toolName.includes('send_email') || runAnomalies.length === 0) return params;
-          const existingBody = String(params.body ?? params.message ?? '');
-          const alerts = formatAnomalyAlerts(runAnomalies);
-          return {
-            ...params,
-            body: `${existingBody}${alerts}`,
-          };
-        },
-        onNodeUpdate: async (event: NodeExecutionEvent) => {
-          console.log(`[executeWorkflow.node] run=${runId} node=${event.nodeId} status=${event.status}`);
-          const executionId = nodeExecutionIds.get(event.nodeId) ?? uuidv4();
-          const hasExecutionRow = nodeExecutionIds.has(event.nodeId);
-          nodeExecutionIds.set(event.nodeId, executionId);
-
-          if (event.status === 'running' || !hasExecutionRow) {
-            await db.prepare(`
-              INSERT INTO node_executions (
-                id, run_id, node_id, node_label, node_type, status, input_data, output_data,
-                tokens_used, cost_inr, duration_ms, evaluator_score
-              ) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?)
-              ON CONFLICT (id) DO UPDATE SET
-                run_id = EXCLUDED.run_id,
-                node_id = EXCLUDED.node_id,
-                node_label = EXCLUDED.node_label,
-                node_type = EXCLUDED.node_type,
-                status = EXCLUDED.status,
-                input_data = EXCLUDED.input_data,
-                output_data = EXCLUDED.output_data,
-                tokens_used = EXCLUDED.tokens_used,
-                cost_inr = EXCLUDED.cost_inr,
-                duration_ms = EXCLUDED.duration_ms,
-                evaluator_score = EXCLUDED.evaluator_score
-            `).run(
-              executionId,
-              runId,
-              event.nodeId,
-              event.nodeLabel,
-              event.nodeType,
-              event.status,
-              null,
-              toJsonParam(event.output),
-              event.tokensUsed,
-              event.costInr,
-              event.durationMs,
-              event.evaluatorScore ?? null,
-            );
-          } else {
-            await db.prepare(`
-              UPDATE node_executions
-              SET node_label = ?, node_type = ?, status = ?, output_data = ?::jsonb, tokens_used = ?, cost_inr = ?, duration_ms = ?, evaluator_score = ?
-              WHERE id = ?
-            `).run(
-              event.nodeLabel,
-              event.nodeType,
-              event.status,
-              toJsonParam(event.output),
-              event.tokensUsed,
-              event.costInr,
-              event.durationMs,
-              event.evaluatorScore ?? null,
-              executionId,
-            );
-          }
-
-          const totals = await db.prepare(`
-            SELECT COALESCE(SUM(tokens_used), 0) AS totalTokens, COALESCE(SUM(cost_inr), 0) AS totalCostInr
-            FROM node_executions
-            WHERE run_id = ?
-          `).get<{ totaltokens: number | string; totalcostinr: number | string }>(runId);
-
-          await db.prepare(`
-            UPDATE workflow_runs
-            SET total_tokens = ?, total_cost_inr = ?
-            WHERE id = ?
-          `).run(Number(totals?.totaltokens ?? 0), Number(totals?.totalcostinr ?? 0), runId);
-
-          if (
-            event.status === 'passed'
-            && event.nodeType === 'llm_call'
-            && workflow.user_id
-          ) {
-            const llmText = typeof event.output === 'string'
-              ? event.output
-              : JSON.stringify(event.output ?? '');
-            if (llmText.trim()) {
-              const metrics = await extractMetricsFromText(llmText);
-              pendingMemories.push({ content: llmText, metrics });
-
-              const detected = await detectAnomalies(workflowId, workflow.user_id, runId, metrics);
-              for (const anomaly of detected) {
-                const dedupeKey = `${anomaly.key}:${anomaly.current}`;
-                if (seenAnomalyKeys.has(dedupeKey)) continue;
-                seenAnomalyKeys.add(dedupeKey);
-                runAnomalies.push(anomaly);
-              }
-            }
-          }
-
-          emitRunEvent(runId, 'node_update', {
-            nodeId: event.nodeId,
-            nodeLabel: event.nodeLabel,
-            nodeType: event.nodeType,
-            status: event.status,
-            outputPreview: event.outputPreview,
-            skipReason: event.status === 'skipped'
-              ? String((event.output as { reason?: unknown } | null)?.reason ?? event.outputPreview ?? 'Skipped')
-              : null,
-            tokensUsed: event.tokensUsed,
-            costInr: event.costInr,
-            durationMs: event.durationMs,
-            evaluatorScore: event.evaluatorScore ?? null,
-            runningTotalCostInr: event.runningTotalCostInr,
-            timestamp: new Date().toISOString(),
-          });
-          console.log(`[runEvent.emit] run=${runId} event=node_update node=${event.nodeId} status=${event.status}`);
-        },
-      });
-
-      const finalStatus = cancelledRuns.has(runId)
-        ? 'failed'
-        : (result.status === 'completed' ? 'completed' : 'failed');
-
-      await db.prepare(`
-        UPDATE workflow_runs
-        SET status = ?, ended_at = NOW(), total_tokens = ?, total_cost_inr = ?, anomalies = ?::jsonb
-        WHERE id = ?
-      `).run(finalStatus, result.totalTokens, result.totalCostInr, JSON.stringify(runAnomalies), runId);
-
-      if (finalStatus === 'completed' && workflow.user_id) {
-        for (const memory of pendingMemories) {
-          await db.prepare(`
-            INSERT INTO workflow_memories (id, workflow_id, run_id, user_id, content, embedding_json, metric_key, metric_value, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
-          `).run(uuidv4(), workflowId, runId, workflow.user_id, memory.content, '[]', null, null);
-
-          for (const metric of memory.metrics) {
-            await db.prepare(`
-              INSERT INTO workflow_memories (id, workflow_id, run_id, user_id, content, embedding_json, metric_key, metric_value, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
-            `).run(
-              uuidv4(),
-              workflowId,
-              runId,
-              workflow.user_id,
-              memory.content,
-              '[]',
-              metric.key,
-              metric.value,
-            );
-          }
-        }
-      }
-
-      if (runAnomalies.length > 0 && !hasEmailNode) {
-        console.warn(`[anomaly] workflow=${workflowId} run=${runId} anomalies=${JSON.stringify(runAnomalies)}`);
-      }
-
-      emitRunEvent(runId, 'run_complete', {
-        runId,
-        status: finalStatus,
-        totalTokens: result.totalTokens,
-        totalCostInr: result.totalCostInr,
-        anomalies: runAnomalies,
-        durationMs: Date.now() - startedAt,
-        error: result.error ?? (cancelledRuns.has(runId) ? 'Run stopped by user.' : null),
-      });
-      console.log(`[runEvent.emit] run=${runId} event=run_complete status=${finalStatus}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Run failed.';
-      await db.prepare(`
-        UPDATE workflow_runs
-        SET status = 'failed', ended_at = NOW(), anomalies = ?::jsonb
-        WHERE id = ?
-      `).run('[]', runId);
-
-      emitRunEvent(runId, 'run_complete', {
-        runId,
-        status: 'failed',
-        totalTokens: 0,
-        totalCostInr: 0,
-        anomalies: [],
-        durationMs: Date.now() - startedAt,
-        error: message,
-      });
-      console.log(`[runEvent.emit] run=${runId} event=run_complete status=failed error=${message}`);
-    } finally {
-      cancelledRuns.delete(runId);
-      activeWorkflowRuns.delete(runId);
-    }
-  };
-
-  // API Routes
-  app.get("/api/health", async (req, res) => {
-    try {
-      await db.queryOne('SELECT 1 AS ok');
-      res.json({ status: "ok", db: "postgres_ready" });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Database unavailable';
-      res.status(500).json({ status: 'error', db: 'postgres_unavailable', error: message });
-    }
-  });
-
-  // Workflow CRUDS
-  app.get("/api/workflows", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const workflows = await db.prepare(`
-      SELECT * FROM workflows
-      WHERE user_id = ?
-      ORDER BY created_at DESC
-    `).all<WorkflowRow>(user.userId);
-
-    res.json({ workflows: workflows.map(serializeWorkflowRow) });
-  });
-
-  app.post("/api/workflows", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const { name, description, status, dag, prompt, estimatedCostPerRunInr } = req.body;
-    const id = uuidv4();
-    await db.prepare(`
-      INSERT INTO workflows (
-        id, user_id, workspace_id, name, description, prompt, dag, status, estimated_cost_per_run_inr, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, NOW(), NOW())
-    `).run(
-      id,
-      user.userId,
-      user.workspaceId,
-      name,
-      description ?? '',
-      prompt ?? null,
-      toJsonParam(dag),
-      status || 'draft',
-      estimatedCostPerRunInr ?? 0,
-    );
-    res.status(201).json({ workflow: serializeWorkflowRow(await getWorkflowById(id)) });
-  });
-
-  app.get("/api/workflows/:id", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const workflow = await getOwnedWorkflow(req.params.id, user);
-    if (!workflow) {
-      return res.status(404).json({ error: 'Workflow not found.' });
-    }
-
-    res.json({ workflow: serializeWorkflowRow(workflow) });
-  });
-
-  app.patch("/api/workflows/:id", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    console.log(`[workflows.patch] user=${user.userId} workflow=${req.params.id}`);
-
-    const workflow = await getOwnedWorkflow(req.params.id, user);
-    if (!workflow) {
-      return res.status(404).json({ error: 'Workflow not found.' });
-    }
-
-    const { name, status, description } = req.body as { name?: string; status?: string; description?: string };
-    const allowedStatuses = new Set(['active', 'paused', 'draft', 'ready']);
-    if (status != null && !allowedStatuses.has(String(status))) {
-      return res.status(400).json({ error: 'Invalid workflow status.' });
-    }
-
-    const updateResult = await db.prepare(`
-      UPDATE workflows
-      SET name = COALESCE(?, name),
-          status = COALESCE(?, status),
-          description = COALESCE(?, description),
-          updated_at = NOW()
-      WHERE id = ? AND user_id = ?
-    `).run(name ?? null, status ?? null, description ?? null, req.params.id, user.userId);
-
-    if ((updateResult.rowCount ?? 0) === 0) {
-      return res.status(404).json({ error: 'Workflow not found.' });
-    }
-
-    res.json({ workflow: serializeWorkflowRow(await getOwnedWorkflow(req.params.id, user)) });
-  });
-
-  app.delete("/api/workflows/:id", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const workflow = await getOwnedWorkflow(req.params.id, user);
-    if (!workflow) {
-      return res.status(404).json({ error: 'Workflow not found.' });
-    }
-
-    await db.prepare(`DELETE FROM node_executions WHERE run_id IN (SELECT id FROM workflow_runs WHERE workflow_id = ?)`)
-      .run(req.params.id);
-    await db.prepare(`DELETE FROM workflow_runs WHERE workflow_id = ?`).run(req.params.id);
-    await db.prepare("DELETE FROM workflows WHERE id = ?").run(req.params.id);
-    res.json({ success: true });
-  });
-
-  // ── Workflow Generation via Claude ─────────────────────────────────────
-  app.post("/api/workflows/generate", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const { prompt } = req.body as { prompt?: string };
-    const safePrompt = prompt?.trim() ?? '';
-
-    if (safePrompt.length < 20) {
-      return res.status(400).json({ error: 'Prompt must be at least 20 characters.' });
-    }
-    if (safePrompt.length > 500) {
-      return res.status(400).json({ error: 'Prompt must be 500 characters or fewer.' });
-    }
-
-    const workflowId = uuidv4();
-    await db.prepare(`
-      INSERT INTO workflows (
-        id, user_id, workspace_id, name, description, prompt, dag, status,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?, NOW(), NOW())
-    `).run(
-      workflowId,
-      user.userId,
-      user.workspaceId,
-      'Generating...',
-      '',
-      safePrompt,
-      null,
-      'generating',
+    rawText = readMessageText(data.choices?.[0]?.message?.content);
+  } else {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: systemPrompt }],
+          },
+          contents: [{ parts: [{ text: userPrompt }] }],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: 'application/json',
+          },
+        }),
+      },
     );
 
-    setImmediate(() => {
-      void runWorkflowGeneration(workflowId);
-    });
-
-    return res.status(201).json({ workflowId, status: 'generating' });
-  });
-
-  app.get('/api/workflows/:id/stream', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const workflow = await getOwnedWorkflow(req.params.id, user);
-    if (!workflow) {
-      return res.status(403).json({ error: 'Forbidden.' });
-    }
-
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const serialized = serializeWorkflowRow(workflow);
-    if (workflow.status !== 'generating') {
-      if (workflow.status === 'failed') {
-        writeSSE(res, 'error', { message: workflow.generation_error || 'Workflow generation failed.' });
-      } else {
-        writeSSE(res, 'complete', {
-          workflowId: workflow.id,
-          name: workflow.name,
-          description: workflow.description ?? '',
-          dag: serialized?.dag,
-          estimatedCostPerRunInr: workflow.estimated_cost_per_run_inr ?? 0,
-        });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return res.end();
-    }
-
-    if (workflow.name && workflow.name !== 'Generating...') {
-      writeSSE(res, 'phase', {
-        phase: 'named',
-        name: workflow.name,
-        description: workflow.description ?? '',
-      });
-    }
-
-    const channel = `workflow:${workflow.id}`;
-    const handler = (payload: { event: string; data: unknown }) => {
-      writeSSE(res, payload.event, payload.data);
-      if (payload.event === 'complete' || payload.event === 'error') {
-        void (async () => {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          cleanup();
-        })();
-      }
+    const data = await response.json().catch(() => ({})) as {
+      error?: { message?: string };
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     };
-
-    const heartbeat = setInterval(() => {
-      writeSSE(res, 'heartbeat', { timestamp: new Date().toISOString() });
-    }, 15000);
-
-    const cleanup = () => {
-      clearInterval(heartbeat);
-      runEventBus.off(channel, handler);
-      res.end();
-    };
-
-    runEventBus.on(channel, handler);
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      runEventBus.off(channel, handler);
-    });
-
-    if (!activeWorkflowGenerations.has(workflow.id)) {
-      void runWorkflowGeneration(workflow.id);
+    if (!response.ok) {
+      throw new Error(String(data.error?.message ?? 'Gemini prep analysis request failed.'));
     }
+
+    rawText = String(data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
+  }
+
+  const parsed = JSON.parse(extractJsonPayload(rawText));
+  return {
+    result: normalize(parsed),
+    provider: config.provider,
+    model: config.model,
+  };
+}
+
+function parseGitHubRepository(input: string): { owner: string; repo: string } | null {
+  const match = input.trim().match(/github\.com\/(.+?)\/(.+?)(?:\.git|\/|$)/i);
+  if (!match) return null;
+  return {
+    owner: match[1],
+    repo: match[2],
+  };
+}
+
+async function fetchGitHubRepositoryContext(projectInput: string): Promise<string> {
+  const parsed = parseGitHubRepository(projectInput);
+  if (!parsed) return projectInput;
+
+  const repoUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`;
+  const [repoResponse, readmeResponse, languagesResponse] = await Promise.all([
+    fetch(repoUrl, { headers: { Accept: 'application/vnd.github+json' } }).catch(() => null),
+    fetch(`${repoUrl}/readme`, { headers: { Accept: 'application/vnd.github.raw+json' } }).catch(() => null),
+    fetch(`${repoUrl}/languages`, { headers: { Accept: 'application/vnd.github+json' } }).catch(() => null),
+  ]);
+
+  const repoData = repoResponse && repoResponse.ok
+    ? await repoResponse.json().catch(() => ({})) as Record<string, unknown>
+    : {};
+  const readmeText = readmeResponse && readmeResponse.ok ? await readmeResponse.text().catch(() => '') : '';
+  const languagesData = languagesResponse && languagesResponse.ok
+    ? await languagesResponse.json().catch(() => ({})) as Record<string, number>
+    : {};
+
+  const repoDescription = String(repoData.description ?? '').trim();
+  const defaultBranch = String(repoData.default_branch ?? '').trim();
+  const primaryLanguage = String(repoData.language ?? '').trim();
+  const topics = Array.isArray(repoData.topics) ? repoData.topics.map((topic) => String(topic)).join(', ') : '';
+  const languages = Object.keys(languagesData).join(', ');
+  const readmeExcerpt = readmeText.trim().slice(0, 5000);
+
+  return [
+    `Project input: ${projectInput}`,
+    repoDescription ? `Repository description: ${repoDescription}` : '',
+    primaryLanguage ? `Primary language: ${primaryLanguage}` : '',
+    defaultBranch ? `Default branch: ${defaultBranch}` : '',
+    topics ? `Topics: ${topics}` : '',
+    languages ? `Detected languages: ${languages}` : '',
+    readmeExcerpt ? `README excerpt:\n${readmeExcerpt}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function parseCookies(cookieHeader?: string): Record<string, string> {
+  return String(cookieHeader ?? '')
+    .split(';')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((accumulator, segment) => {
+      const separatorIndex = segment.indexOf('=');
+      if (separatorIndex === -1) return accumulator;
+      const key = segment.slice(0, separatorIndex).trim();
+      const value = segment.slice(separatorIndex + 1).trim();
+      accumulator[key] = decodeURIComponent(value);
+      return accumulator;
+    }, {});
+}
+
+function getClientKey(request: express.Request): string {
+  const forwardedFor = request.headers['x-forwarded-for'];
+  const forwardedValue = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+  return String(forwardedValue ?? request.ip ?? 'local').split(',')[0].trim() || 'local';
+}
+
+function applyAuthRateLimit(request: express.Request, response: express.Response, next: express.NextFunction) {
+  const key = getClientKey(request);
+  const now = Date.now();
+  const bucket = authBuckets.get(key);
+
+  if (!bucket || now >= bucket.resetAt) {
+    authBuckets.set(key, { count: 1, resetAt: now + AUTH_WINDOW_MS });
+    next();
+    return;
+  }
+
+  if (bucket.count >= AUTH_MAX_REQUESTS) {
+    response.status(429).json({ error: 'Too many authentication requests. Please retry shortly.' });
+    return;
+  }
+
+  bucket.count += 1;
+  next();
+}
+
+function normalizeEmail(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derivedKey = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${derivedKey}`;
+}
+
+function verifyPassword(password: string, storedHash: string): boolean {
+  const [salt, expectedHash] = String(storedHash ?? '').split(':');
+  if (!salt || !expectedHash) return false;
+  const actualHash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(actualHash, 'hex'), Buffer.from(expectedHash, 'hex'));
+}
+
+function setSessionCookie(response: express.Response, userId: string) {
+  const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  response.setHeader(
+    'Set-Cookie',
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(userId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}${secureFlag}`,
+  );
+}
+
+function clearSessionCookie(response: express.Response) {
+  const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  response.setHeader('Set-Cookie', `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureFlag}`);
+}
+
+function toSessionUser(user: DbUserRow) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    joinedAt: user.created_at,
+    loggedIn: true,
+  };
+}
+
+async function getUserFromRequest(request: express.Request): Promise<DbUserRow | null> {
+  const cookies = parseCookies(request.headers.cookie);
+  const sessionId = String(cookies[SESSION_COOKIE_NAME] ?? '').trim();
+  if (!sessionId) return null;
+
+  const user = await db.prepare('SELECT id, email, name, password_hash, created_at, updated_at FROM users WHERE id = ?')
+    .get<DbUserRow>(sessionId);
+
+  return user ?? null;
+}
+
+async function requireUser(request: AuthedRequest, response: express.Response, next: express.NextFunction) {
+  const user = await getUserFromRequest(request);
+  if (!user) {
+    response.status(401).json({ error: 'Authentication required.' });
+    return;
+  }
+
+  request.user = user;
+  next();
+}
+
+async function createApp() {
+  await db.exec(DATABASE_SCHEMA_SQL);
+
+  const app = express();
+  app.disable('x-powered-by');
+  app.use(cors({ origin: true, credentials: true }));
+  app.use(express.json());
+
+  app.get('/api/health', async (_request, response) => {
+    await db.query('SELECT 1');
+    response.json({ status: 'ok' });
   });
 
-  app.post('/api/workflows/:id/runs', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
+  app.post('/api/auth/signup', applyAuthRateLimit, async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const name = String(request.body?.name ?? '').trim();
+    const password = String(request.body?.password ?? '');
 
-    const workflow = await getOwnedWorkflow(req.params.id, user);
-    if (!workflow) {
-      return res.status(404).json({ error: 'Workflow not found.' });
+    if (!email || !email.includes('@')) {
+      response.status(400).json({ error: 'A valid email address is required.' });
+      return;
     }
-    if (workflow.status === 'generating') {
-      return res.status(409).json({ error: 'Workflow is still being generated' });
+    if (name.length < 2) {
+      response.status(400).json({ error: 'Name must be at least 2 characters.' });
+      return;
     }
-    if (!['ready', 'active'].includes(workflow.status)) {
-      return res.status(409).json({ error: 'Workflow must be ready or active before it can run.' });
-    }
-
-    const activeRun = await db.prepare(`
-      SELECT id FROM workflow_runs WHERE workflow_id = ? AND status = 'running' LIMIT 1
-    `).get<{ id: string }>(workflow.id);
-    if (activeRun) {
-      return res.status(409).json({ error: 'A run is already in progress' });
+    if (password.length < 8) {
+      response.status(400).json({ error: 'Password must be at least 8 characters.' });
+      return;
     }
 
-    const runId = uuidv4();
-    const trigger = req.body?.trigger === 'cron' ? 'cron' : 'manual';
-    await db.prepare(`
-      INSERT INTO workflow_runs (id, workflow_id, status, trigger, started_at, total_tokens, total_cost_inr)
-      VALUES (?, ?, 'running', ?, NOW(), 0, 0)
-    `).run(runId, workflow.id, trigger);
+    const existingUser = await db.prepare('SELECT id FROM users WHERE email = ?').get<{ id: string }>(email);
+    if (existingUser) {
+      response.status(409).json({ error: 'An account with this email already exists.' });
+      return;
+    }
 
-    res.status(201).json({ runId });
-    setImmediate(() => {
-      void runWorkflowExecution(workflow.id, runId);
-    });
+    const userId = crypto.randomUUID();
+    const passwordHash = hashPassword(password);
+
+    await db.prepare('INSERT INTO users (id, email, name, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())')
+      .run(userId, email, name, passwordHash);
+    await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())')
+      .run(crypto.randomUUID(), userId, 1, 'light');
+
+    const createdUser = await db.prepare('SELECT id, email, name, password_hash, created_at, updated_at FROM users WHERE id = ?')
+      .get<DbUserRow>(userId);
+
+    if (!createdUser) {
+      response.status(500).json({ error: 'Unable to create the account.' });
+      return;
+    }
+
+    setSessionCookie(response, createdUser.id);
+    response.status(201).json({ user: toSessionUser(createdUser) });
   });
 
-  app.get('/api/workflows/:id/runs', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const workflow = await getOwnedWorkflow(req.params.id, user);
-    if (!workflow) {
-      return res.status(404).json({ error: 'Workflow not found.' });
+  app.post('/api/auth/signin', applyAuthRateLimit, async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const password = String(request.body?.password ?? '');
+    if (!email || !password) {
+      response.status(400).json({ error: 'Email and password are required.' });
+      return;
     }
 
-    const runs = await db.prepare(`
-      SELECT id, status, trigger, started_at, ended_at
-      FROM workflow_runs
-      WHERE workflow_id = ?
-      ORDER BY started_at DESC
-      LIMIT 10
-    `).all<{
-      id: string;
-      status: string;
-      trigger: string | null;
-      started_at: DbTimestamp;
-      ended_at: DbTimestamp;
-    }>(workflow.id);
-
-    const runIds = new Set(runs.map((run) => run.id));
-    const nodeLogs = runs.length > 0
-      ? await db.prepare(`
-          SELECT ne.run_id, ne.node_id, ne.node_label, ne.status, ne.output_data, ne.created_at
-          FROM node_executions ne
-          INNER JOIN workflow_runs wr ON wr.id = ne.run_id
-          WHERE wr.workflow_id = ?
-          ORDER BY ne.created_at ASC
-        `).all<{
-          run_id: string;
-          node_id: string;
-          node_label: string | null;
-          status: string;
-          output_data: unknown;
-          created_at: DbTimestamp;
-        }>(workflow.id)
-      : [];
-
-    const logsByRun = new Map<string, Array<{
-      node_id: string;
-      node_label: string;
-      status: string;
-      output_preview: string;
-      created_at: string | null;
-    }>>();
-    for (const log of nodeLogs) {
-      if (!runIds.has(log.run_id)) continue;
-      const current = logsByRun.get(log.run_id) ?? [];
-      const previewRaw = typeof log.output_data === 'string' ? log.output_data : JSON.stringify(log.output_data ?? '');
-      current.push({
-        node_id: log.node_id,
-        node_label: log.node_label ?? log.node_id,
-        status: log.status,
-        output_preview: previewRaw.length > 180 ? `${previewRaw.slice(0, 180)}...` : previewRaw,
-        created_at: toIsoTimestamp(log.created_at),
-      });
-      logsByRun.set(log.run_id, current);
+    const user = await db.prepare('SELECT id, email, name, password_hash, created_at, updated_at FROM users WHERE email = ?')
+      .get<DbUserRow>(email);
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      response.status(401).json({ error: 'Invalid credentials.' });
+      return;
     }
 
-    res.json({
-      runs: runs.map((run) => ({
-        id: run.id,
-        status: run.status,
-        trigger: run.trigger ?? 'manual',
-        started_at: toIsoTimestamp(run.started_at),
-        ended_at: toIsoTimestamp(run.ended_at),
-        duration_ms: run.ended_at
-          ? (new Date(String(run.ended_at)).getTime() - new Date(String(run.started_at)).getTime())
-          : null,
-        node_logs: logsByRun.get(run.id) ?? [],
-      })),
-    });
+    setSessionCookie(response, user.id);
+    response.json({ user: toSessionUser(user) });
   });
 
-  app.get('/api/runs/:runId/stream', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const run = await db.prepare(`
-      SELECT wr.*, w.user_id
-      FROM workflow_runs wr
-      INNER JOIN workflows w ON w.id = wr.workflow_id
-      WHERE wr.id = ? AND w.user_id = ?
-    `).get(req.params.runId, user.userId) as
-      | { id: string; status: string; total_tokens: number; total_cost_inr: number; started_at: string; ended_at: string | null; anomalies?: unknown }
-      | undefined;
-
-    if (!run) {
-      return res.status(404).json({ error: 'Run not found.' });
+  app.get('/api/auth/session', async (request, response) => {
+    const user = await getUserFromRequest(request);
+    if (!user) {
+      response.status(401).json({ error: 'No active session.' });
+      return;
     }
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
+    response.json({ user: toSessionUser(user) });
+  });
 
-    if (run.status !== 'running') {
-      writeSSE(res, 'run_complete', {
-        runId: run.id,
-        status: run.status,
-        totalTokens: Number(run.total_tokens ?? 0),
-        totalCostInr: Number(run.total_cost_inr ?? 0),
-        anomalies: Array.isArray(run.anomalies) ? run.anomalies : (() => {
-          try { return JSON.parse(String(run.anomalies ?? '[]')); } catch { return []; }
-        })(),
-        durationMs: run.ended_at ? (new Date(String(run.ended_at)).getTime() - new Date(String(run.started_at)).getTime()) : 0,
-      });
-      return res.end();
+  app.post('/api/auth/signout', (_request, response) => {
+    clearSessionCookie(response);
+    response.json({ success: true });
+  });
+
+  app.get('/api/users/me', requireUser, async (request, response) => {
+    response.json({ user: toSessionUser((request as AuthedRequest).user!) });
+  });
+
+  app.patch('/api/users/me', requireUser, async (request, response) => {
+    const name = String(request.body?.name ?? '').trim();
+    if (name.length < 2) {
+      response.status(400).json({ error: 'Name must be at least 2 characters.' });
+      return;
     }
 
-    const channel = `run:${run.id}`;
-    const handler = (payload: { event: string; data: unknown }) => {
-      console.log(`[runEvent.stream] run=${run.id} event=${payload.event}`);
-      writeSSE(res, payload.event, payload.data);
-      if (payload.event === 'run_complete') {
-        cleanup();
-      }
-    };
-
-    const heartbeat = setInterval(() => {
-      writeSSE(res, 'heartbeat', { timestamp: new Date().toISOString() });
-    }, 15000);
-
-    const cleanup = () => {
-      clearInterval(heartbeat);
-      runEventBus.off(channel, handler);
-      res.end();
-    };
-
-    runEventBus.on(channel, handler);
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      runEventBus.off(channel, handler);
-    });
+    const user = (request as AuthedRequest).user!;
+    await db.prepare('UPDATE users SET name = ?, updated_at = NOW() WHERE id = ?').run(name, user.id);
+    const updatedUser = await db.prepare('SELECT id, email, name, password_hash, created_at, updated_at FROM users WHERE id = ?').get<DbUserRow>(user.id);
+    response.json({ user: updatedUser ? toSessionUser(updatedUser) : { ...toSessionUser(user), name } });
   });
 
-  app.delete('/api/runs/:runId', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
+  app.delete('/api/users/me', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    await db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+    clearSessionCookie(response);
+    response.json({ success: true });
+  });
 
-    const run = await db.prepare(`
-      SELECT wr.id
-      FROM workflow_runs wr
-      INNER JOIN workflows w ON w.id = wr.workflow_id
-      WHERE wr.id = ? AND w.user_id = ? AND wr.status = 'running'
-    `).get<{ id: string }>(req.params.runId, user.userId);
+  app.post('/api/auth/change-password', requireUser, async (request, response) => {
+    const currentPassword = String(request.body?.currentPassword ?? '');
+    const newPassword = String(request.body?.newPassword ?? '');
+    const user = (request as AuthedRequest).user!;
 
-    if (!run) {
-      return res.status(404).json({ error: 'Run not found or already finished.' });
+    if (!currentPassword || !newPassword) {
+      response.status(400).json({ error: 'Both passwords are required.' });
+      return;
+    }
+    if (newPassword.length < 8) {
+      response.status(400).json({ error: 'New password must be at least 8 characters.' });
+      return;
+    }
+    if (!verifyPassword(currentPassword, user.password_hash)) {
+      response.status(400).json({ error: 'Current password is incorrect.' });
+      return;
     }
 
-    cancelledRuns.add(run.id);
-    res.json({ success: true });
+    await db.prepare('UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?').run(hashPassword(newPassword), user.id);
+    response.json({ success: true });
   });
 
-  app.get('/api/runs/:runId', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const run = await db.prepare(`
-      SELECT wr.id, wr.status, wr.started_at, wr.ended_at, wr.trigger, wr.total_tokens, wr.total_cost_inr, wr.workflow_id
-      FROM workflow_runs wr
-      INNER JOIN workflows w ON w.id = wr.workflow_id
-      WHERE wr.id = ? AND w.user_id = ?
-      LIMIT 1
-    `).get<{
-      id: string;
-      status: string;
-      started_at: DbTimestamp;
-      ended_at: DbTimestamp;
-      trigger: string | null;
-      total_tokens: number | string | null;
-      total_cost_inr: number | string | null;
-      workflow_id: string;
-    }>(req.params.runId, user.userId);
-
-    if (!run) {
-      return res.status(404).json({ error: 'Run not found.' });
+  app.get('/api/users/preferences', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    let preferences = await db.prepare('SELECT sidebar_open, theme FROM user_preferences WHERE user_id = ?').get<UserPreferencesRow>(user.id);
+    if (!preferences) {
+      await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())')
+        .run(crypto.randomUUID(), user.id, 1, 'light');
+      preferences = { sidebar_open: true, theme: 'light' };
     }
 
-    res.json({
-      run: {
-        id: run.id,
-        workflow_id: run.workflow_id,
-        status: run.status,
-        trigger: run.trigger ?? 'manual',
-        started_at: toIsoTimestamp(run.started_at),
-        ended_at: toIsoTimestamp(run.ended_at),
-        duration_ms: run.ended_at ? (new Date(String(run.ended_at)).getTime() - new Date(String(run.started_at)).getTime()) : null,
-      },
-    });
+    response.json({ sidebarOpen: Boolean(preferences.sidebar_open), theme: preferences.theme ?? 'light' });
   });
 
-  app.get('/api/memories/search', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-    const q = String(req.query.q ?? '').trim();
-    const workflowId = String(req.query.workflow_id ?? '').trim() || null;
-    if (!q) {
-      return res.json({ memories: [] });
-    }
-    const rows = await searchWorkflowMemories(user.userId, q, workflowId);
-    res.json({
-      memories: rows.map((row) => ({
-        content: row.content ?? '',
-        metric_key: row.metric_key ?? null,
-        metric_value: row.metric_value == null ? null : Number(row.metric_value),
-        workflow_name: row.workflow_name ?? null,
-        created_at: toIsoTimestamp(row.created_at),
-      })),
-    });
-  });
+  app.patch('/api/users/preferences', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const sidebarOpen = typeof request.body?.sidebarOpen === 'boolean' ? request.body.sidebarOpen : null;
+    const theme = typeof request.body?.theme === 'string' ? request.body.theme : null;
+    const existing = await db.prepare('SELECT user_id FROM user_preferences WHERE user_id = ?').get<{ user_id: string }>(user.id);
 
-  app.get('/api/templates', async (_req, res) => {
-    const rows = await db.prepare(`
-      SELECT id, name, description, category, dag, prompt_text, estimated_cost_inr, use_count, is_featured, created_at
-      FROM templates
-      ORDER BY use_count DESC, created_at DESC
-    `).all<TemplateRow>();
-    res.json({
-      templates: rows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        description: row.description ?? '',
-        category: row.category ?? '',
-        dag: row.dag ?? null,
-        prompt_text: row.prompt_text ?? '',
-        estimated_cost_inr: Number(row.estimated_cost_inr ?? 0),
-        use_count: Number(row.use_count ?? 0),
-        is_featured: Boolean(row.is_featured),
-        created_at: toIsoTimestamp(row.created_at),
-      })),
-    });
-  });
-
-  app.get('/api/templates/:id', async (req, res) => {
-    const row = await db.prepare(`
-      SELECT id, name, description, category, dag, prompt_text, estimated_cost_inr, use_count, is_featured, created_at
-      FROM templates
-      WHERE id = ?
-      LIMIT 1
-    `).get<TemplateRow>(req.params.id);
-    if (!row) {
-      return res.status(404).json({ error: 'Template not found.' });
-    }
-    res.json({
-      template: {
-        id: row.id,
-        name: row.name,
-        description: row.description ?? '',
-        category: row.category ?? '',
-        dag: row.dag ?? null,
-        prompt_text: row.prompt_text ?? '',
-        estimated_cost_inr: Number(row.estimated_cost_inr ?? 0),
-        use_count: Number(row.use_count ?? 0),
-        is_featured: Boolean(row.is_featured),
-        created_at: toIsoTimestamp(row.created_at),
-      },
-    });
-  });
-
-  app.post('/api/templates/:id/use', async (req, res) => {
-    const row = await db.prepare(`
-      UPDATE templates
-      SET use_count = COALESCE(use_count, 0) + 1
-      WHERE id = ?
-      RETURNING prompt_text, use_count
-    `).get<{ prompt_text: string | null; use_count: number | string }>(req.params.id);
-    if (!row) {
-      return res.status(404).json({ error: 'Template not found.' });
-    }
-    res.json({
-      prompt_text: row.prompt_text ?? '',
-      use_count: Number(row.use_count ?? 0),
-    });
-  });
-
-  app.get('/api/pulse', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const days = Math.max(1, Math.min(365, Number(req.query.days ?? 30) || 30));
-    const metricRows = await db.prepare(`
-      SELECT wm.workflow_id, wm.metric_key, wm.metric_value, wm.content, wm.created_at, w.name AS workflow_name
-      FROM workflow_memories wm
-      INNER JOIN workflows w ON w.id = wm.workflow_id
-      WHERE wm.user_id = ?
-        AND wm.metric_value IS NOT NULL
-        AND wm.created_at >= NOW() - (?::text || ' days')::interval
-      ORDER BY wm.created_at ASC
-    `).all<{
-      workflow_id: string;
-      metric_key: string | null;
-      metric_value: number | string | null;
-      content: string | null;
-      created_at: DbTimestamp;
-      workflow_name: string | null;
-    }>(user.userId, String(days));
-
-    const grouped = new Map<string, typeof metricRows>();
-    for (const row of metricRows) {
-      const key = String(row.metric_key ?? '').trim();
-      if (!key) continue;
-      const current = grouped.get(key) ?? [];
-      current.push(row);
-      grouped.set(key, current);
+    if (existing) {
+      await db.prepare('UPDATE user_preferences SET sidebar_open = COALESCE(?, sidebar_open), theme = COALESCE(?, theme), updated_at = NOW() WHERE user_id = ?')
+        .run(sidebarOpen === null ? null : (sidebarOpen ? 1 : 0), theme, user.id);
+    } else {
+      await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())')
+        .run(crypto.randomUUID(), user.id, sidebarOpen === null ? 1 : (sidebarOpen ? 1 : 0), theme ?? 'light');
     }
 
-    const widgets = Array.from(grouped.entries()).map(([metricKey, rows]) => {
-      const points = rows.map((row) => ({
-        date: toIsoTimestamp(row.created_at),
-        value: Number(row.metric_value ?? 0),
-      }));
-      const latest = rows[rows.length - 1];
-      const previous = rows.length >= 2 ? Number(rows[rows.length - 2].metric_value ?? 0) : null;
-      const latestValue = Number(latest.metric_value ?? 0);
-      const changePct = previous && Number.isFinite(previous) && previous !== 0
-        ? Number((((latestValue - previous) / previous) * 100).toFixed(1))
-        : 0;
-      return {
-        metric_key: metricKey,
-        latest_value: latestValue,
-        latest_label: String(latest.content ?? '').slice(0, 120),
-        data_points: points,
-        change_pct: changePct,
-        workflow_name: latest.workflow_name ?? 'Workflow',
-      };
-    });
-
-    const totalWorkflowsRow = await db.prepare(`
-      SELECT COUNT(*)::int AS count
-      FROM workflows
-      WHERE user_id = ?
-    `).get<{ count: number | string }>(user.userId);
-    const activeWorkflowsRow = await db.prepare(`
-      SELECT COUNT(*)::int AS count
-      FROM workflows
-      WHERE user_id = ? AND status = 'active'
-    `).get<{ count: number | string }>(user.userId);
-    const runsThisMonthRow = await db.prepare(`
-      SELECT COUNT(*)::int AS count, COALESCE(SUM(total_cost_inr), 0) AS total_cost
-      FROM workflow_runs
-      WHERE user_id = ? AND started_at >= date_trunc('month', NOW())
-    `).get<{ count: number | string; total_cost: number | string }>(user.userId);
-
-    const runsThisMonth = Number(runsThisMonthRow?.count ?? 0);
-    const summary = {
-      total_workflows: Number(totalWorkflowsRow?.count ?? 0),
-      active_workflows: Number(activeWorkflowsRow?.count ?? 0),
-      runs_this_month: runsThisMonth,
-      cost_this_month_inr: Number(runsThisMonthRow?.total_cost ?? 0),
-      estimated_hours_saved: Number((runsThisMonth * 0.5).toFixed(1)),
-    };
-
-    res.json({ widgets, summary });
+    response.json({ success: true });
   });
 
-  app.post('/api/workflows/:id/share', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-    console.log(`[workflows.share] user=${user.userId} workflow=${req.params.id}`);
-    const workflow = await getOwnedWorkflow(req.params.id, user);
-    if (!workflow) return res.status(404).json({ error: 'Workflow not found.' });
-    const token = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-    await db.prepare(`
-      UPDATE workflows
-      SET share_token = ?, is_public = TRUE, updated_at = NOW()
-      WHERE id = ? AND user_id = ?
-    `).run(token, workflow.id, user.userId);
-    res.json({ share_url: `http://localhost:3000/w/${token}` });
-  });
+  app.post('/api/prep/plan', requireUser, async (request, response) => {
+    const body = (request.body ?? {}) as PrepPlanRequestBody;
+    const domain = String(body.domain ?? '').trim();
+    const interviewType = String(body.interviewType ?? '').trim();
+    const companyType = String(body.companyType ?? '').trim();
+    const timeline = String(body.timeline ?? '').trim();
 
-  app.post('/api/workflows/:id/unshare', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-    console.log(`[workflows.unshare] user=${user.userId} workflow=${req.params.id}`);
-    const workflow = await getOwnedWorkflow(req.params.id, user);
-    if (!workflow) return res.status(404).json({ error: 'Workflow not found.' });
-    await db.prepare(`
-      UPDATE workflows
-      SET is_public = FALSE, share_token = NULL, updated_at = NOW()
-      WHERE id = ? AND user_id = ?
-    `).run(workflow.id, user.userId);
-    res.json({ success: true });
-  });
-
-  app.get('/api/w/:token', async (req, res) => {
-    const row = await db.prepare(`
-      SELECT id, name, description, dag, estimated_cost_per_run_inr, fork_count
-      FROM workflows
-      WHERE share_token = ? AND is_public = TRUE
-      LIMIT 1
-    `).get<{
-      id: string;
-      name: string;
-      description: string | null;
-      dag: unknown;
-      estimated_cost_per_run_inr: number | string | null;
-      fork_count: number | string | null;
-    }>(req.params.token);
-    if (!row) {
-      return res.status(404).json({ error: 'Shared workflow not found.' });
+    if (!domain || !interviewType || !companyType || !timeline) {
+      response.status(400).json({ error: 'Domain, interview type, company type, and timeline are required.' });
+      return;
     }
-    res.json({
-      workflow: {
-        id: row.id,
-        name: row.name,
-        description: row.description ?? '',
-        dag: typeof row.dag === 'string' ? JSON.parse(row.dag) : row.dag,
-        estimated_cost_per_run_inr: Number(row.estimated_cost_per_run_inr ?? 0),
-        fork_count: Number(row.fork_count ?? 0),
-      },
-    });
-  });
-
-  app.post('/api/w/:token/fork', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-    const source = await db.prepare(`
-      SELECT *
-      FROM workflows
-      WHERE share_token = ? AND is_public = TRUE
-      LIMIT 1
-    `).get<WorkflowRow>(req.params.token);
-    if (!source) {
-      return res.status(404).json({ error: 'Shared workflow not found.' });
-    }
-    const newId = uuidv4();
-    await db.prepare(`
-      INSERT INTO workflows (
-        id, user_id, workspace_id, name, description, prompt, dag, status,
-        cron_schedule, estimated_cost_per_run_inr, generation_error, forked_from, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, 'ready', ?, ?, ?, ?, NOW(), NOW())
-    `).run(
-      newId,
-      user.userId,
-      user.workspaceId,
-      `${source.name} (fork)`,
-      source.description ?? '',
-      source.prompt ?? '',
-      toJsonParam(parseDag(source.dag)),
-      source.cron_schedule,
-      Number(source.estimated_cost_per_run_inr ?? 0),
-      null,
-      source.id,
-    );
-    await db.prepare(`
-      UPDATE workflows
-      SET fork_count = COALESCE(fork_count, 0) + 1, updated_at = NOW()
-      WHERE id = ?
-    `).run(source.id);
-    res.json({ workflowId: newId });
-  });
-
-  // ── Terminal (streaming chat) ─────────────────────────────────────────
-  app.post("/api/terminal", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const { message, history } = req.body as {
-      message?: string;
-      history?: Array<{ role: "user" | "assistant"; content: string }>;
-    };
-
-    if (!message || message.trim().length === 0) {
-      return res.status(400).json({ error: "Message is required." });
-    }
-    if (message.length > 2000) {
-      return res.status(400).json({ error: "Message must be 2000 characters or fewer." });
-    }
-    const safeHistory = (history ?? [])
-      .filter(m => m.role && m.content)
-      .slice(-20); // cap context window
-
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.flushHeaders();
 
     try {
-      const model = process.env.TERMINAL_MODEL?.trim() || process.env.ANTHROPIC_MODEL?.trim() || "claude-haiku-4-5";
-      const haikuModel = getHaikuModel();
-      const historyTranscript = safeHistory
-        .map((entry) => `${entry.role.toUpperCase()}: ${entry.content}`)
-        .join('\n\n');
+      const analysis = await callStructuredModel<PrepPlanResponse>(
+        [
+          'You are a technical interview analyst.',
+          'Return only valid JSON. Do not include markdown, comments, or explanatory text.',
+          'The JSON shape must be:',
+          JSON.stringify({
+            focusAreas: ['string'],
+            interviewPattern: ['string'],
+            projectRelevance: 'string',
+            codingExpectation: {
+              language: 'string',
+              difficulty: 'string',
+              timePressure: 'string',
+            },
+            prepStrategy: {
+              '3-day': ['string'],
+              '7-day': ['string'],
+              '30-day': ['string'],
+            },
+          }),
+          'Be specific to the role. A startup frontend internship and a tier-1 frontend internship should produce very different outputs.',
+        ].join('\n'),
+        `The user has selected: Domain = ${domain}, Interview Type = ${interviewType}, Company Type = ${companyType}, Timeline = ${timeline}. Based on this, return a JSON object with: focusAreas (array of 5-7 technical topics ranked by importance for this exact role), interviewPattern (what rounds to expect and in what order), projectRelevance (how heavily projects are evaluated for this role), codingExpectation (language, difficulty level, time pressure), and prepStrategy (3-day / 7-day / 30-day plan outline).`,
+        normalizePrepPlanResponse,
+      );
 
-      const classifierResponse = await requestLlmCompletion({
-        model: haikuModel,
-        maxTokens: 80,
-        temperature: 0,
-        system: "Classify this message. Return ONLY JSON:\n{ intent: 'workflow_edit'|'workflow_query'|'general', workflow_hint: string|null }\nworkflow_edit = user wants to change/pause/delete/update a workflow\nworkflow_query = user asking about past runs or workflow status\nworkflow_hint = name or description fragment of the target workflow",
-        user: message,
-      });
-      const classifier = parseJsonObject(classifierResponse.text) ?? { intent: 'general', workflow_hint: null };
-      const intent = String(classifier.intent ?? 'general');
-      const workflowHint = classifier.workflow_hint == null ? null : String(classifier.workflow_hint);
+      response.json({ analysis: analysis.result, meta: { provider: analysis.provider, model: analysis.model } });
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : 'Unable to generate the prep plan.' });
+    }
+  });
 
-      const allWorkflows = await db.prepare(`
-        SELECT id, name, description, dag, status, cron_schedule
-        FROM workflows
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-      `).all<{
-        id: string;
-        name: string;
-        description: string | null;
-        dag: unknown;
-        status: string;
-        cron_schedule: string | null;
-      }>(user.userId);
+  app.post('/api/prep/project/repository', requireUser, async (request, response) => {
+    const projectInput = String(request.body?.projectInput ?? '').trim();
+    if (!projectInput) {
+      response.status(400).json({ error: 'A repository URL or project description is required.' });
+      return;
+    }
 
-      if (intent === 'workflow_edit') {
-        const editResponse = await requestLlmCompletion({
-          model: haikuModel,
-          maxTokens: 300,
-          temperature: 0,
-          system: "You are a workflow editor. Given the user's edit request and their workflows, produce ONLY a JSON edit action:\n{ workflow_id: string, action: 'update_node_prompt'|'pause'|'resume'|'update_schedule'|'update_tool_param', node_id: string|null, field: string|null, new_value: string|null }\nIf you cannot determine which workflow: return { action: 'unclear' }",
-          user: `Request: ${message}\n\nWorkflows: ${JSON.stringify(allWorkflows)}`,
-        });
-        const action = parseJsonObject(editResponse.text) ?? { action: 'unclear' };
-        const actionName = String(action.action ?? 'unclear');
-        const workflowId = String(action.workflow_id ?? '').trim();
-        let responseText = "Done — I've applied the requested workflow update. The change is live.";
+    try {
+      const repositoryContext = await fetchGitHubRepositoryContext(projectInput);
+      const analysis = await callStructuredModel<ProjectAnalysisResponse>(
+        [
+          'You are a senior engineer.',
+          'Return only valid JSON with no markdown wrappers.',
+          'The JSON shape must be:',
+          JSON.stringify({
+            projectSummary: 'string',
+            techStack: ['string'],
+            keyFeatures: ['string'],
+            interviewableTopics: ['string'],
+            commonFollowUps: ['string'],
+            weakPoints: ['string'],
+            improvementSuggestions: ['string'],
+          }),
+        ].join('\n'),
+        `The user has submitted a GitHub repo or project description. Analyze it and return JSON with: projectSummary (2 sentences), techStack (array), keyFeatures (array of what the app actually does), interviewableTopics (array of specific things an interviewer would ask about this project), commonFollowUps (questions that naturally follow "tell me about your project"), weakPoints (things the project likely doesn't handle that an interviewer might probe), and improvementSuggestions (2-3 realistic things they could add before the interview to make it stronger).\n\n${repositoryContext}`,
+        normalizeProjectAnalysisResponse,
+      );
 
-        if (!workflowId || actionName === 'unclear') {
-          responseText = "Done — I've reviewed your request, but the target workflow edit was unclear. Please specify workflow and change.";
-        } else {
-          const workflow = await db.prepare(`
-            SELECT id, name, description, dag, status, cron_schedule
-            FROM workflows
-            WHERE id = ? AND user_id = ?
-            LIMIT 1
-          `).get<WorkflowRow>(workflowId, user.userId);
-          if (!workflow) {
-            responseText = "Done — I've reviewed your request, but I couldn't find that workflow in your account.";
-          } else if (actionName === 'pause') {
-            await db.prepare(`UPDATE workflows SET status = 'paused', updated_at = NOW() WHERE id = ?`).run(workflowId);
-            responseText = "Done — I've paused the workflow. The change is live.";
-          } else if (actionName === 'resume') {
-            await db.prepare(`UPDATE workflows SET status = 'active', updated_at = NOW() WHERE id = ?`).run(workflowId);
-            responseText = "Done — I've resumed the workflow. The change is live.";
-          } else if (actionName === 'update_schedule') {
-            const schedule = String(action.new_value ?? '').trim();
-            await db.prepare(`UPDATE workflows SET cron_schedule = ?, updated_at = NOW() WHERE id = ?`).run(schedule || null, workflowId);
-            responseText = "Done — I've updated the schedule. The change is live.";
-          } else if (actionName === 'update_node_prompt' || actionName === 'update_tool_param') {
-            const dag = parseDag(workflow.dag) ?? { nodes: [], edges: [] };
-            const nodeId = String(action.node_id ?? '').trim();
-            const field = String(action.field ?? '').trim();
-            const newValue = action.new_value == null ? null : String(action.new_value);
-            const node = dag.nodes.find((n) => n.id === nodeId);
-            if (!node) {
-              responseText = "Done — I couldn't find the target node in that workflow.";
-            } else {
-              if (actionName === 'update_node_prompt') {
-                node.config = {
-                  ...(node.config ?? {}),
-                  system_prompt: newValue ?? '',
-                };
-                responseText = "Done — I've updated the node prompt. The change is live.";
-              } else {
-                const params = { ...(node.config?.tool_params_template ?? {}) };
-                if (field) {
-                  params[field] = newValue;
-                }
-                node.config = {
-                  ...(node.config ?? {}),
-                  tool_params_template: params,
-                };
-                responseText = "Done — I've updated the tool parameters. The change is live.";
-              }
-              await db.prepare(`UPDATE workflows SET dag = ?::jsonb, updated_at = NOW() WHERE id = ?`)
-                .run(JSON.stringify(dag), workflowId);
-            }
-          } else {
-            responseText = "Done — I've reviewed your request, but that edit action is not supported yet.";
-          }
-        }
+      response.json({ analysis: analysis.result, meta: { provider: analysis.provider, model: analysis.model } });
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : 'Unable to analyze the repository.' });
+    }
+  });
 
-        const data = JSON.stringify({ delta: responseText });
-        res.write(`data: ${data}\n\n`);
-        res.write("data: [DONE]\n\n");
-        res.end();
+  app.post('/api/prep/project/description', requireUser, async (request, response) => {
+    const manualDescription = String(request.body?.manualDescription ?? '').trim();
+    if (!manualDescription) {
+      response.status(400).json({ error: 'A manual project description is required.' });
+      return;
+    }
+
+    try {
+      const analysis = await callStructuredModel<ManualProjectAnalysisResponse>(
+        [
+          'You are a senior engineer.',
+          'Return only valid JSON with no markdown wrappers.',
+          'The JSON shape must be:',
+          JSON.stringify({
+            techStack: ['string'],
+            likelyArchitecture: ['string'],
+            whatInterviewerWillFocus: ['string'],
+            gapsThatMightExist: ['string'],
+            projectSpecificQuestions: ['string'],
+            assumptions: ['string'],
+          }),
+        ].join('\n'),
+        `The user has described their project in their own words. They have not shared code. Based only on this description, infer: techStack (best guess), likelyArchitecture, whatInterviewerWillFocus, gapsThatMightExist, and generate 5 project-specific interview questions they should be ready for. Flag any assumptions you made.\n\nDescription:\n${manualDescription}`,
+        normalizeManualProjectAnalysisResponse,
+      );
+
+      response.json({ analysis: analysis.result, meta: { provider: analysis.provider, model: analysis.model } });
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : 'Unable to analyze the project description.' });
+    }
+  });
+
+  app.post('/api/prep/diagnostic', requireUser, async (request, response) => {
+    const domain = String(request.body?.domain ?? '').trim();
+    const experienceLevel = String(request.body?.experienceLevel ?? '').trim();
+    if (!domain || !experienceLevel) {
+      response.status(400).json({ error: 'Domain and experience level are required.' });
+      return;
+    }
+
+    try {
+      const analysis = await callStructuredModel<DiagnosticQuestion[]>(
+        [
+          'You are running a pre-test diagnostic.',
+          'Return only valid JSON with no markdown wrappers.',
+          'The JSON must be an array of 8 objects shaped like:',
+          JSON.stringify({
+            question: 'string',
+            type: 'mcq',
+            options: ['string'],
+            correctAnswer: 'string',
+            topicTag: 'string',
+          }),
+          'Questions must mix MCQ and true_false, escalate in difficulty, and avoid basic definitions.',
+        ].join('\n'),
+        `The user's domain is ${domain} and their self-rated experience is ${experienceLevel}. Generate 8 rapid diagnostic questions that quickly reveal their actual level across fundamentals, framework knowledge, async/state/data handling, and one domain-specific area. Return a JSON array with: question, type, options (if MCQ), correctAnswer, and topicTag.`,
+        normalizeDiagnosticQuestions,
+      );
+
+      response.json({ analysis: analysis.result.slice(0, 8), meta: { provider: analysis.provider, model: analysis.model } });
+    } catch (error) {
+      response.status(502).json({ error: error instanceof Error ? error.message : 'Unable to generate diagnostic questions.' });
+    }
+  });
+
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (isProduction) {
+    const distPath = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (request, response) => {
+      if (request.originalUrl.startsWith('/api')) {
+        response.status(404).json({ error: 'Not found.' });
+        return;
+      }
+      response.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+
+    app.use(vite.middlewares);
+    app.use('*', async (request, response, next) => {
+      if (request.originalUrl.startsWith('/api')) {
+        next();
         return;
       }
 
-      let runContextSnippet = '';
-      if (intent === 'workflow_query') {
-        const hint = (workflowHint ?? message).trim();
-        const workflows = hint
-          ? allWorkflows.filter((w) =>
-            w.name.toLowerCase().includes(hint.toLowerCase())
-            || String(w.description ?? '').toLowerCase().includes(hint.toLowerCase()))
-          : [];
-        const targetWorkflow = workflows[0] ?? allWorkflows[0];
-        if (targetWorkflow) {
-          const recentRuns = await db.prepare(`
-            SELECT id, status, started_at, ended_at, total_tokens, total_cost_inr, anomalies
-            FROM workflow_runs
-            WHERE workflow_id = ?
-            ORDER BY started_at DESC
-            LIMIT 10
-          `).all(targetWorkflow.id);
-          runContextSnippet = `RECENT RUN DATA FOR WORKFLOW "${targetWorkflow.name}":\n${JSON.stringify(recentRuns)}`;
-        }
+      try {
+        const template = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
+        const html = await vite.transformIndexHtml(request.originalUrl, template);
+        response.status(200).set({ 'Content-Type': 'text/html' }).end(html);
+      } catch (error) {
+        next(error);
       }
-
-      const memories = await searchWorkflowMemories(user.userId, message);
-      const memorySnippet = memories.length > 0
-        ? `RELEVANT HISTORY FROM USER'S PAST WORKFLOW RUNS:\n${memories.map((m) => {
-          const metricPart = m.metric_key ? ` | ${m.metric_key}=${Number(m.metric_value ?? 0)}` : '';
-          return `- [${toIsoTimestamp(m.created_at)}] ${m.workflow_name ?? 'Workflow'}${metricPart}: ${String(m.content ?? '').slice(0, 400)}`;
-        }).join('\n')}\nUse this context to answer questions about past runs.`
-        : '';
-
-      const response = await requestLlmCompletion({
-        model,
-        maxTokens: 1024,
-        temperature: 0.2,
-        system: `You are Automata AI, an intelligent assistant for building and debugging autonomous workflows. Help users design workflow logic, write system prompts, debug failures, understand AI agent patterns, and translate plain English descriptions into structured workflow DAGs. Be concise and practical.${memorySnippet ? `\n\n${memorySnippet}` : ''}${runContextSnippet ? `\n\n${runContextSnippet}` : ''}`,
-        user: historyTranscript
-          ? `${historyTranscript}\n\nUSER: ${message}`
-          : message,
-      });
-
-      const text = response.text ?? '';
-      for (let index = 0; index < text.length; index += 180) {
-        const data = JSON.stringify({ delta: text.slice(index, index + 180) });
-        res.write(`data: ${data}\n\n`);
-      }
-      res.write("data: [DONE]\n\n");
-      res.end();
-    } catch (err: any) {
-      console.error("[terminal]", err);
-      res.write(`data: ${JSON.stringify({ error: err.message ?? "Stream failed." })}\n\n`);
-      res.end();
-    }
-  });
-
-  // Integrations
-  app.get("/api/integrations", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    try {
-      const rows = await db.prepare(`
-        SELECT provider, account_name as account, connected_at
-        FROM integrations
-        WHERE workspace_id = ? AND enabled = TRUE
-        ORDER BY connected_at DESC
-      `).all<IntegrationRow>(user.workspaceId);
-
-      const responseRows: IntegrationRow[] = rows.map((row) => ({
-        ...row,
-        source: 'oauth',
-      }));
-      const seenProviders = new Set(responseRows.map((row) => row.provider));
-
-      (Object.keys(ENV_INTEGRATION_CONFIG) as Array<keyof typeof ENV_INTEGRATION_CONFIG>).forEach((provider) => {
-        if (seenProviders.has(provider)) return;
-        const token = getEnvTokenForProvider(provider);
-        if (!token) return;
-        responseRows.push({
-          provider,
-          account: getEnvAccountForProvider(provider),
-          connected_at: new Date().toISOString(),
-          source: 'env',
-        });
-      });
-
-      res.json(responseRows);
-    } catch {
-      res.json([]);
-    }
-  });
-
-  app.get('/api/integrations/connect/:provider', async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const provider = normalizeProviderFromRoute(req.params.provider);
-    if (!provider) {
-      return res.status(400).json({ error: 'Unsupported integration provider.' });
-    }
-
-    if (isEnvManagedProvider(provider)) {
-      if (getEnvTokenForProvider(provider)) {
-        return res.redirect(`/settings/integrations?connected=${provider}`);
-      }
-      const envVar = ENV_INTEGRATION_CONFIG[provider].tokenEnv;
-      return res.status(400).json({ error: `${provider} is environment-managed. Set ${envVar} in .env and restart the server.` });
-    }
-
-    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REDIRECT_URI) {
-      return res.status(500).json({ error: 'Google OAuth is not configured.' });
-    }
-
-    const state = signOAuthState({
-      userId: user.userId,
-      workspaceId: user.workspaceId,
-      provider,
-      ts: Date.now(),
-    });
-
-    const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    url.searchParams.set('client_id', process.env.GOOGLE_CLIENT_ID);
-    url.searchParams.set('redirect_uri', process.env.GOOGLE_REDIRECT_URI);
-    url.searchParams.set('response_type', 'code');
-    url.searchParams.set('scope', [
-      'https://www.googleapis.com/auth/gmail.send',
-      'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive.readonly',
-      'openid',
-      'email',
-      'profile',
-    ].join(' '));
-    url.searchParams.set('access_type', 'offline');
-    url.searchParams.set('prompt', 'consent');
-    url.searchParams.set('state', state);
-
-    return res.redirect(url.toString());
-  });
-
-  app.get('/api/integrations/callback/google', async (req, res) => {
-    const code = String(req.query.code ?? '');
-    const stateToken = String(req.query.state ?? '');
-    if (!code || !stateToken) {
-      return res.status(400).json({ error: 'Missing code or state.' });
-    }
-
-    const state = verifyOAuthState(stateToken);
-    if (!state) {
-      return res.status(400).json({ error: 'Invalid OAuth state.' });
-    }
-
-    const workspaceId = String(state.workspaceId ?? '').trim();
-    const userId = String(state.userId ?? '').trim();
-    const issuedAt = Number(state.ts ?? 0);
-    if (!workspaceId || !userId || !issuedAt || Date.now() - issuedAt > 15 * 60 * 1000) {
-      return res.status(400).json({ error: 'Expired or invalid OAuth state.' });
-    }
-
-    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI) {
-      return res.status(500).json({ error: 'Google OAuth is not configured.' });
-    }
-
-    try {
-      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          code,
-          client_id: process.env.GOOGLE_CLIENT_ID,
-          client_secret: process.env.GOOGLE_CLIENT_SECRET,
-          redirect_uri: process.env.GOOGLE_REDIRECT_URI,
-          grant_type: 'authorization_code',
-        }),
-      });
-
-      if (!tokenResponse.ok) {
-        const details = await tokenResponse.text();
-        return res.status(500).json({ error: `OAuth token exchange failed (${tokenResponse.status}): ${details}` });
-      }
-
-      const tokenData = await tokenResponse.json() as {
-        access_token: string;
-        refresh_token?: string;
-        expires_in?: number;
-      };
-
-      const profileResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` },
-      });
-
-      if (!profileResponse.ok) {
-        const details = await profileResponse.text();
-        return res.status(500).json({ error: `Google userinfo failed (${profileResponse.status}): ${details}` });
-      }
-
-      const profile = await profileResponse.json() as { email?: string; name?: string };
-      const accountName = profile.email || profile.name || userId;
-      const expiresAt = tokenData.expires_in
-        ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
-        : null;
-
-      const encryptedAccessToken = encryptSecret(tokenData.access_token);
-      const encryptedRefreshToken = tokenData.refresh_token ? encryptSecret(tokenData.refresh_token) : null;
-
-      await upsertIntegration(
-        userId,
-        workspaceId,
-        'gmail',
-        encryptedAccessToken,
-        encryptedRefreshToken,
-        expiresAt,
-        accountName,
-      );
-
-      await upsertIntegration(
-        userId,
-        workspaceId,
-        'google_sheets',
-        encryptedAccessToken,
-        encryptedRefreshToken,
-        expiresAt,
-        accountName,
-      );
-
-      return res.redirect('/settings?connected=google');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'OAuth callback failed.';
-      return res.status(500).json({ error: message });
-    }
-  });
-
-  app.delete("/api/integrations/:provider", async (req, res) => {
-    const user = await requireSession(req, res);
-    if (!user) return;
-
-    const provider = normalizeProviderFromRoute(req.params.provider);
-    if (!provider) {
-      return res.status(400).json({ error: 'Unsupported integration provider.' });
-    }
-
-    if (isEnvManagedProvider(provider) && getEnvTokenForProvider(provider)) {
-      return res.status(409).json({
-        error: `${provider} is managed via environment variables and cannot be disconnected from UI.`,
-      });
-    }
-
-    try {
-      await db.prepare("DELETE FROM integrations WHERE workspace_id = ? AND provider = ?")
-        .run(user.workspaceId, provider);
-    } catch { /* table may not exist yet */ }
-    res.json({ success: true });
-  });
-
-  app.post('/api/auth/signout', (req, res) => {
-    res.setHeader('Set-Cookie', 'automata_session=; Path=/; Max-Age=0; SameSite=Lax');
-    res.json({ success: true });
-  });
-
-  // User profile
-  app.patch("/api/users/me", (req, res) => {
-    const { name } = req.body as { name?: string };
-    if (!name || name.trim().length < 2) {
-      return res.status(400).json({ error: "Name must be at least 2 characters." });
-    }
-    res.json({ user: { name: name.trim() } });
-  });
-
-  app.delete("/api/users/me", (req, res) => {
-    res.json({ success: true });
-  });
-
-  app.post("/api/auth/change-password", (req, res) => {
-    const { currentPassword, newPassword } = req.body as { currentPassword?: string; newPassword?: string };
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: "Both passwords are required." });
-    }
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: "New password must be at least 8 characters." });
-    }
-    res.json({ success: true });
-  });
-
-  // User preferences
-  app.get("/api/users/preferences", async (req, res) => {
-    const userId = (req.headers['x-user-id'] as string) || 'default';
-    let prefs = await db.prepare("SELECT * FROM user_preferences WHERE user_id = ?").get<{ sidebar_open: boolean | null; theme: string | null }>(userId);
-    if (!prefs) {
-      prefs = { sidebar_open: false, theme: 'system' };
-    }
-    res.json({ sidebarOpen: Boolean(prefs.sidebar_open), theme: prefs.theme ?? 'system' });
-  });
-
-  app.patch("/api/users/preferences", async (req, res) => {
-    const userId = (req.headers['x-user-id'] as string) || 'default';
-    const { sidebarOpen, theme } = req.body as { sidebarOpen?: boolean; theme?: string };
-    const existing = await db.prepare("SELECT id FROM user_preferences WHERE user_id = ?").get<{ id: string }>(userId);
-    if (existing) {
-      await db.prepare("UPDATE user_preferences SET sidebar_open = COALESCE(?, sidebar_open), theme = COALESCE(?, theme), updated_at = NOW() WHERE user_id = ?")
-        .run(sidebarOpen !== undefined ? (sidebarOpen ? 1 : 0) : null, theme ?? null, userId);
-    } else {
-      await db.prepare("INSERT INTO user_preferences (id, user_id, sidebar_open, theme, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())")
-        .run(uuidv4(), userId, sidebarOpen ? 1 : 0, theme ?? 'system');
-    }
-    res.json({ success: true });
-  });
-
-  // Terminal messages persistence
-  app.get("/api/terminal/messages", async (req, res) => {
-    const sessionId = req.query.sessionId as string;
-    if (!sessionId) return res.json({ messages: [] });
-    const rows = await db.prepare(
-      "SELECT id, role, content, tokens_used, cost_inr, created_at FROM terminal_messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 100"
-    ).all(sessionId);
-    res.json({ messages: rows });
-  });
-
-  app.post("/api/terminal/messages", async (req, res) => {
-    const { sessionId, role, content, tokensUsed, costInr, userId } = req.body as any;
-    if (!sessionId || !role || !content) return res.status(400).json({ error: "sessionId, role, content required." });
-    const id = uuidv4();
-    await db.prepare(
-      "INSERT INTO terminal_messages (id, user_id, session_id, role, content, tokens_used, cost_inr) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).run(id, userId ?? 'anonymous', sessionId, role, content, tokensUsed ?? 0, costInr ?? 0);
-    res.json({ id });
-  });
-
-  // Workflow execute (manual trigger)
-  app.post("/api/workflows/execute", async (req, res) => {
-    const { workflowId } = req.body as { workflowId?: string };
-    if (!workflowId) return res.status(400).json({ error: "workflowId required." });
-    const workflow = await db.prepare("SELECT * FROM workflows WHERE id = ?").get<WorkflowRow>(workflowId);
-    if (!workflow) return res.status(404).json({ error: "Workflow not found." });
-
-    const runId = uuidv4();
-    await db.prepare(
-      "INSERT INTO workflow_runs (id, workflow_id, status) VALUES (?, ?, ?)"
-    ).run(runId, workflowId, 'running');
-
-    try {
-      const { executeWorkflow } = await import('./src/lib/workflowExecutor.js');
-      const dag = parseDag(workflow.dag) ?? { nodes: [], edges: [] };
-      const workspaceId = workflow.workspace_id ?? `workspace:${workflow.user_id ?? 'anonymous'}`;
-      const result = await executeWorkflow(dag, runId, {
-        resolveIntegration: async (provider: string) => {
-          return resolveIntegrationToken(workspaceId, provider);
-        },
-        refreshIntegrationToken: async (provider: string, refreshToken: string) => {
-          const normalizedProvider = normalizeProviderFromRoute(provider);
-          if (!normalizedProvider || !isGoogleProvider(normalizedProvider)) {
-            throw new Error(`Token refresh is not supported for provider: ${provider}`);
-          }
-          return refreshGoogleToken(workspaceId, normalizedProvider, refreshToken);
-        },
-      });
-      await db.prepare(
-        "UPDATE workflow_runs SET status = ?, ended_at = NOW(), total_tokens = ?, total_cost_inr = ? WHERE id = ?"
-      ).run(result.status, result.totalTokens, result.totalCostInr, runId);
-      res.json({ runId, status: result.status, totalTokens: result.totalTokens, totalCostInr: result.totalCostInr });
-    } catch (err: any) {
-      await db.prepare("UPDATE workflow_runs SET status = ?, ended_at = NOW() WHERE id = ?").run('failed', runId);
-      res.status(500).json({ error: err.message ?? 'Execution failed.' });
-    }
-  });
-
-  // Analytics
-  app.get("/api/analytics/summary", (req, res) => {
-    res.json({
-      success_rate: "99.98%",
-      p99_latency: "24ms",
-      total_runs: 2450,
-      total_cost_inr: 42500
-    });
-  });
-
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: { server },
-      },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  const resolvedPort = await findAvailablePort(preferredPort, host);
-
-  server.listen(resolvedPort, host, () => {
-    if (resolvedPort !== preferredPort) {
-      console.warn(`[AUTOMATA] Port ${preferredPort} is busy, using ${resolvedPort} instead.`);
-    }
-    console.log(`[AUTOMATA] Platform running on http://localhost:${resolvedPort}`);
+  const port = Number(process.env.PORT ?? 3000);
+  app.listen(port, () => {
+    console.log(`Promptly server listening on http://localhost:${port}`);
   });
 }
 
-async function findAvailablePort(port: number, host: string): Promise<number> {
-  try {
-    await canListenOnPort(port, host);
-    return port;
-  } catch (error) {
-    const listenError = error as NodeJS.ErrnoException;
-
-    if (listenError.code === "EADDRINUSE") {
-      return findAvailablePort(port + 1, host);
-    }
-
-    throw error;
-  }
-}
-
-function canListenOnPort(port: number, host: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const probe = createNetServer();
-
-    probe.once("error", (error) => {
-      reject(error);
-    });
-
-    probe.once("listening", () => {
-      probe.close((closeError) => {
-        if (closeError) {
-          reject(closeError);
-          return;
-        }
-
-        resolve();
-      });
-    });
-
-    probe.listen(port, host);
-  });
-}
-
-startServer();
+createApp().catch((error) => {
+  console.error('Failed to start Promptly server:', error);
+  process.exit(1);
+});

@@ -1,335 +1,148 @@
-import React, {
-  useState, useEffect, useRef, useCallback, useMemo,
-} from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Send, X, Save, User, Cpu, Trash2, AlertCircle } from 'lucide-react';
-import { cn } from '../lib/utils';
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { LiveCodingSession } from '../components/ModulePlaceholders';
+import { getStoredPrepWorkspace } from '../lib/prep';
 import { View } from '../App';
-
-// ─── Types ─────────────────────────────────────────────────────────────────
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  streaming?: boolean;
-  timestamp: number;
-}
 
 interface TerminalPageProps {
   onViewChange: (view: View) => void;
 }
 
-const STORAGE_KEY = 'automata-terminal-session';
-const MAX_CHARS = 2000;
-function uid() {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-}
+const ROUND_CONTEXT: Record<string, { prompt: string; followUp: string; fileName: string; notes: string[] }> = {
+  frontend: {
+    prompt: 'Your search UI occasionally shows stale results. Walk through the root cause, then explain the smallest fix you trust under time pressure.',
+    followUp: 'Be explicit about cancellation, stale state, and how you would prove the fix works.',
+    fileName: 'SearchResults.tsx',
+    notes: ['You named the symptom quickly.', 'Push harder on why stale requests still reach state.', 'End with the exact test you would write.'],
+  },
+  backend: {
+    prompt: 'A payment webhook is retried three times and duplicate side effects are leaking through. Explain your fix and the guard you would add first.',
+    followUp: 'Be explicit about idempotency keys, persistence order, and how retries stay safe.',
+    fileName: 'paymentWebhook.ts',
+    notes: ['You identified the duplicate-write risk.', 'State the source of truth before you describe the queue.', 'Name one safe retry boundary.'],
+  },
+  'full-stack': {
+    prompt: 'The UI shows a successful save before the backend write fails. Explain how you would realign the client and server without confusing the user.',
+    followUp: 'Cover optimistic updates, rollback behavior, and how you would prevent duplicate writes.',
+    fileName: 'CheckoutFlow.ts',
+    notes: ['You explained the user impact clearly.', 'Keep the mutation path linear.', 'Call out the rollback state before the retry path.'],
+  },
+  'ai-ml': {
+    prompt: 'The retriever keeps sending weak context to the model. Explain how you would stop low-signal chunks from hurting answer quality.',
+    followUp: 'Cover ranking, confidence thresholds, fallback behavior, and how you would measure the improvement.',
+    fileName: 'retrievalPipeline.py',
+    notes: ['You named retrieval quality as the real issue.', 'Keep the metric tied to one failure mode.', 'End with the evaluation loop you would trust.'],
+  },
+};
 
-function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-// ─── Message Bubble ─────────────────────────────────────────────────────────
-
-function MessageBubble({ msg }: { msg: Message }) {
-  if (msg.role === 'system') {
-    return (
-      <div className="flex justify-center my-3">
-        <span className="text-xs text-blueprint-muted italic font-mono">{msg.content}</span>
-      </div>
-    );
-  }
-
-  const isUser = msg.role === 'user';
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      className={cn('flex gap-3 max-w-full', isUser ? 'flex-row-reverse' : 'flex-row')}
-    >
-      {/* Avatar */}
-      <div className={cn(
-        'w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5',
-        isUser ? 'bg-surface-container' : 'bg-blue-100',
-      )}>
-        {isUser
-          ? <User size={13} className="text-blueprint-muted" />
-          : <Cpu size={13} className="text-blue-600" />}
-      </div>
-
-      <div className={cn('flex flex-col gap-1 min-w-0', isUser ? 'items-end' : 'items-start')}>
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="font-technical-mono text-technical-mono text-blueprint-muted">{isUser ? 'You' : 'Automata AI'}</span>
-          <span className="font-technical-mono text-technical-mono text-blueprint-muted/60">{formatTime(msg.timestamp)}</span>
-        </div>
-        <div className={cn(
-          'rounded-2xl px-4 py-3 font-body-md text-body-md leading-relaxed max-w-[80%] md:max-w-[70%] whitespace-pre-wrap wrap-break-word',
-          isUser
-            ? 'bg-surface-container text-on-surface'
-            : 'bg-surface-container-lowest text-on-surface border border-outline-variant',
-        )}>
-          {msg.content}
-          {msg.streaming && (
-            <span className="inline-block w-1.5 h-3.5 bg-blue-500 ml-1 animate-pulse rounded-sm" />
-          )}
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-// ─── Main Component ──────────────────────────────────────────────────────────
-
-export default function TerminalPage({ onViewChange }: TerminalPageProps) {
-  const [messages, setMessages] = useState<Message[]>(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) return JSON.parse(stored) as Message[];
-    } catch { /* ignore */ }
-    return [
-      { id: uid(), role: 'system', content: 'Session started', timestamp: Date.now() },
-    ];
-  });
-
-  const [input, setInput] = useState('');
-  const [isSending, setIsSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
-
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // Auto-save to localStorage whenever messages change
-  useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages)); } catch { /* ignore */ }
-  }, [messages]);
-
-  // Scroll to bottom on new messages
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  // Auto-resize textarea
-  useEffect(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    ta.style.height = 'auto';
-    const maxH = 5 * 24; // ~5 lines
-    ta.style.height = Math.min(ta.scrollHeight, maxH) + 'px';
-    ta.style.overflowY = ta.scrollHeight > maxH ? 'auto' : 'hidden';
-  }, [input]);
-
-  const hasResponse = useMemo(
-    () => messages.some(m => m.role === 'assistant' && m.content.length > 0),
-    [messages],
-  );
-
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || isSending) return;
-    if (text.length > MAX_CHARS) {
-      setError(`Message too long (max ${MAX_CHARS} characters)`);
-      return;
-    }
-
-    setError(null);
-    setInput('');
-
-    const userMsg: Message = { id: uid(), role: 'user', content: text, timestamp: Date.now() };
-    const assistantId = uid();
-    const assistantMsg: Message = {
-      id: assistantId, role: 'assistant', content: '', streaming: true, timestamp: Date.now(),
-    };
-
-    setMessages(prev => [...prev, userMsg, assistantMsg]);
-    setIsSending(true);
-
-    const history = messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-
-    try {
-      const res = await fetch('/api/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history }),
-      });
-
-      if (!res.ok || !res.body) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error((data as any).error ?? `Server error ${res.status}`);
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let accumulated = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        // Handle SSE format: "data: ...\n\n"
-        const lines = chunk.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const payload = line.slice(6).trim();
-            if (payload === '[DONE]') break;
-            try {
-              const parsed = JSON.parse(payload);
-              if (parsed.delta) accumulated += parsed.delta;
-              else if (typeof parsed === 'string') accumulated += parsed;
-            } catch {
-              // plain text chunk
-              accumulated += payload;
-            }
-          }
-        }
-        const snapshot = accumulated;
-        setMessages(prev =>
-          prev.map(m => m.id === assistantId ? { ...m, content: snapshot } : m),
-        );
-      }
-
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === assistantId
-            ? { ...m, streaming: false }
-            : m,
-        ),
-      );
-    } catch (err: any) {
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === assistantId
-            ? { ...m, content: err.message ?? 'Request failed.', streaming: false }
-            : m,
-        ),
-      );
-      setError(err.message ?? 'Request failed.');
-    } finally {
-      setIsSending(false);
-      setTimeout(() => textareaRef.current?.focus(), 50);
-    }
-  }, [input, isSending, messages]);
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
-  };
-
-  const clearSession = () => {
-    setMessages([{ id: uid(), role: 'system', content: 'Session cleared', timestamp: Date.now() }]);
-    localStorage.removeItem(STORAGE_KEY);
-  };
-
-  const saveAsWorkflow = async () => {
-    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content);
-    if (!lastAssistant) return;
-    try {
-      const res = await fetch('/api/workflows/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: lastAssistant.content }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed');
-      setSaveSuccess(true);
-      setTimeout(() => { setSaveSuccess(false); onViewChange('editor'); }, 1200);
-    } catch (err: any) {
-      setError(err.message ?? 'Could not save as workflow');
-    }
-  };
+export default function TerminalPage(_props: TerminalPageProps) {
+  const navigate = useNavigate();
+  const workspace = getStoredPrepWorkspace();
+  const context = ROUND_CONTEXT[workspace.selections.domain] ?? ROUND_CONTEXT.frontend;
 
   return (
-    <div className="flex flex-col h-full bg-blueprint-bg" style={{ minHeight: 0 }}>
-
-      {/* ── Top Bar ─────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-4 px-4 sm:px-6 py-4 border-b border-blueprint-line shrink-0 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0">
-          <span className="font-technical-mono text-technical-mono text-blueprint-muted uppercase tracking-widest block mb-0.5">AI Terminal</span>
-          <h1 className="font-headline-md text-headline-md text-primary not-italic">Terminal</h1>
-          <p className="font-body-md text-body-md text-on-surface-variant mt-0.5">Direct AI interaction — test prompts before adding to workflows</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={clearSession}
-            className="flex items-center gap-1.5 font-ui-label text-ui-label text-blueprint-muted hover:text-primary transition-colors px-3 py-1.5 rounded-lg hover:bg-surface-container"
-          >
-            <Trash2 size={13} /> Clear
-          </button>
-          <button
-            onClick={saveAsWorkflow}
-            disabled={!hasResponse}
-            className={cn(
-              'flex items-center gap-1.5 font-ui-label text-ui-label px-4 py-1.5 rounded-full font-medium transition-all',
-              hasResponse
-                ? saveSuccess
-                  ? 'bg-green-500 text-white'
-                  : 'bg-primary text-on-primary hover:bg-inverse-surface'
-                : 'bg-surface-container text-blueprint-muted cursor-not-allowed',
-            )}
-          >
-            <Save size={13} />
-            {saveSuccess ? 'Saved!' : 'Save as Workflow'}
-          </button>
-        </div>
-      </div>
-
-      {/* ── Messages ────────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-5" style={{ minHeight: 0 }}>
-        <AnimatePresence initial={false}>
-          {messages.map(msg => (
-            <MessageBubble key={msg.id} msg={msg} />
-          ))}
-        </AnimatePresence>
-        <div ref={bottomRef} />
-      </div>
-
-      {/* ── Error bar ───────────────────────────────────────────────────── */}
-      {error && (
-        <div className="flex items-center gap-2 px-6 py-3 bg-red-50 border-t border-red-200 text-red-600 text-xs font-mono shrink-0">
-          <AlertCircle size={13} />
-          {error}
-          <button onClick={() => setError(null)} className="ml-auto hover:text-red-300">
-            <X size={13} />
-          </button>
-        </div>
-      )}
-
-      {/* ── Input Area ──────────────────────────────────────────────────── */}
-      <div className="shrink-0 border-t border-blueprint-line bg-surface-container-lowest px-4 sm:px-6 py-4">
-        <div className="flex items-end gap-3 bg-surface-container border border-outline-variant rounded-2xl px-3 sm:px-4 py-3 focus-within:border-primary transition-colors">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => {
-              if (e.target.value.length <= MAX_CHARS) setInput(e.target.value);
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask anything or describe a workflow…"
-            disabled={isSending}
-            rows={1}
-            className="flex-1 bg-transparent text-on-surface text-sm placeholder:text-blueprint-muted resize-none border-none focus:ring-0 outline-none leading-6 min-h-6"
-          />
-          <div className="flex items-center gap-2 shrink-0 pb-0.5">
-            <span className={cn('text-[10px] font-mono', input.length > MAX_CHARS * 0.9 ? 'text-yellow-700' : 'text-blueprint-muted')}>
-              {input.length}/{MAX_CHARS}
-            </span>
-            <button
-              onClick={handleSend}
-              disabled={isSending || !input.trim()}
-              className="w-7 h-7 flex items-center justify-center bg-primary hover:bg-inverse-surface rounded-full transition-colors disabled:opacity-30"
-            >
-              {isSending
-                ? <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                : <Send size={12} className="text-white" />}
-            </button>
+    <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-12">
+      <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+      <main className="relative z-10 mx-auto flex h-full w-full max-w-360 flex-col gap-6">
+        <header className="flex items-center justify-between rounded-xl border border-blueprint-line bg-white/80 p-4 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.04)]">
+          <div>
+            <h1 className="text-headline-md text-primary not-italic">Mock Interview Round</h1>
+            <p className="mt-1 text-body-md text-blueprint-muted">Answer clearly, then explain the tradeoff behind your fix.</p>
           </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 rounded-full border border-blueprint-line bg-[#efeded] px-3 py-1.5 text-ui-label text-primary">
+              <span className="h-2 w-2 rounded-full bg-[#ba1a1a]" /> Live Round
+            </div>
+            <div className="flex items-center gap-2 text-ui-label text-primary">
+              <span className="material-symbols-outlined text-[18px]">timer</span>
+              24:12
+            </div>
+          </div>
+        </header>
+
+        <section className="grid min-h-[720px] gap-6 lg:grid-cols-[280px_1fr_280px]">
+          <aside className="flex flex-col overflow-hidden rounded-xl border border-blueprint-line bg-white/80">
+            <div className="border-b border-blueprint-line bg-[#f5f3f3] p-4">
+              <h2 className="text-ui-label text-primary">Interviewer Prompt</h2>
+            </div>
+            <div className="flex flex-1 flex-col gap-6 p-4">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white">
+                    <span className="material-symbols-outlined text-[14px]">record_voice_over</span>
+                  </div>
+                  <span className="text-ui-label text-blueprint-muted">Interviewer</span>
+                </div>
+                <div className="rounded-lg border border-blueprint-line bg-[#f5f3f3] p-4 text-body-md text-primary">
+                  {context.prompt}
+                  <p className="mt-3 text-body-md text-blueprint-muted">
+                    {context.followUp}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-auto border-b border-blueprint-line pb-2">
+                <label className="flex items-center gap-2 text-body-md text-blueprint-muted">
+                  <span className="material-symbols-outlined text-[18px]">mic</span>
+                  <input className="w-full bg-transparent outline-none placeholder:text-blueprint-muted" placeholder="Say how you would debug or design this..." />
+                </label>
+              </div>
+            </div>
+          </aside>
+
+          <section className="overflow-hidden rounded-xl border border-[#333333] bg-[#1e1e1e]">
+            <div className="flex items-center gap-4 border-b border-[#333333] bg-[#252526] p-3">
+              <div className="flex gap-1.5">
+                <div className="h-3 w-3 rounded-full bg-[#ED6A5E]" />
+                <div className="h-3 w-3 rounded-full bg-[#F4BF4F]" />
+                <div className="h-3 w-3 rounded-full bg-[#61C554]" />
+              </div>
+              <span className="text-ui-label text-[#858585] normal-case">{context.fileName}</span>
+            </div>
+            <div className="min-h-[640px] p-4">
+              <LiveCodingSession variant="dark" className="h-full border-0 bg-transparent p-0 shadow-none" />
+            </div>
+          </section>
+
+          <aside className="flex flex-col gap-6">
+            <article className="rounded-xl border border-blueprint-line bg-white/80 p-6 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.04)]">
+              <h2 className="mb-6 text-ui-label text-primary">What We Are Watching</h2>
+              <div>
+                <div className="mb-2 flex items-center justify-between text-body-md text-primary"><span>Clarity</span><span>82%</span></div>
+                <div className="h-1 w-full rounded-full bg-blueprint-line"><div className="h-full w-[82%] rounded-full bg-primary" /></div>
+              </div>
+              <div className="mt-6">
+                <div className="mb-2 flex items-center justify-between text-body-md text-primary"><span>Tradeoffs</span><span>A-</span></div>
+                <div className="h-1 w-full rounded-full bg-blueprint-line"><div className="h-full w-[90%] rounded-full bg-primary" /></div>
+              </div>
+              <div className="mt-6">
+                <div className="mb-2 flex items-center justify-between text-body-md text-primary"><span>Edge Cases</span><span>61%</span></div>
+                <div className="h-1 w-full rounded-full bg-blueprint-line"><div className="h-full w-[61%] rounded-full bg-primary" /></div>
+              </div>
+            </article>
+
+            <article className="flex flex-1 flex-col overflow-hidden rounded-xl border border-blueprint-line bg-white/80 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.04)]">
+              <div className="flex items-center justify-between border-b border-blueprint-line p-4">
+                <h2 className="text-ui-label text-primary">Session Notes</h2>
+                <span className="h-2 w-2 rounded-full bg-primary" />
+              </div>
+              <div className="space-y-4 p-4 text-body-md text-blueprint-muted">
+                {context.notes.map((item) => (
+                  <div key={item} className="flex gap-3">
+                    <span className="material-symbols-outlined text-[18px] text-primary">arrow_right_alt</span>
+                    <p>{item}</p>
+                  </div>
+                ))}
+              </div>
+            </article>
+          </aside>
+        </section>
+
+        <div className="flex justify-end">
+          <button type="button" onClick={() => navigate('/pulse')} className="rounded-full border border-red-300 bg-white px-6 py-2.5 text-ui-label text-red-600 transition-colors hover:bg-red-50">
+            End Round
+          </button>
         </div>
-        <p className="font-technical-mono text-technical-mono text-blueprint-muted mt-2 text-center">
-          Enter to send · Shift+Enter for new line · session auto-saved
-        </p>
-      </div>
+      </main>
     </div>
   );
 }

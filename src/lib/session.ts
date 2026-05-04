@@ -1,105 +1,72 @@
 export interface SessionUser {
+  id?: string;
   email: string;
   name?: string;
   loggedIn?: boolean;
   joinedAt?: string;
 }
 
-interface StoredAccount {
-  email: string;
-  name: string;
-  password: string;
-  createdAt: string;
-}
+const SESSION_COOKIE_NAME = 'promptly_session';
+const USER_STORAGE_KEY = 'promptly_user';
 
-const SESSION_COOKIE_NAME = 'automata_session';
-const ACCOUNTS_KEY = 'automata_accounts';
+type AuthResult = { ok: true; user: SessionUser } | { ok: false; error: string };
 
-function getStoredAccounts(): StoredAccount[] {
+async function requestJson<T>(path: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   try {
-    const parsed = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || '[]') as StoredAccount[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((entry) => Boolean(entry?.email && entry?.password && entry?.name));
-  } catch {
-    return [];
+    const response = await fetch(path, {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+    });
+    const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+    if (!response.ok) {
+      return { ok: false, error: String((data as { error?: string }).error ?? 'Request failed.') };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Network request failed.' };
   }
 }
 
-function saveStoredAccounts(accounts: StoredAccount[]) {
-  localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-}
-
-export function registerLocalAccount(payload: { email: string; name: string; password: string }): { ok: true; user: SessionUser } | { ok: false; error: string } {
-  const email = payload.email.trim().toLowerCase();
-  const name = payload.name.trim();
-  const password = payload.password;
-
-  if (!email) return { ok: false, error: 'Email is required.' };
-  if (!name || name.length < 2) return { ok: false, error: 'Name must be at least 2 characters.' };
-  if (!password || password.length < 8) return { ok: false, error: 'Password must be at least 8 characters.' };
-
-  const accounts = getStoredAccounts();
-  if (accounts.some((account) => account.email.toLowerCase() === email)) {
-    return { ok: false, error: 'An account with this email already exists.' };
-  }
-
-  accounts.push({
-    email,
-    name,
-    password,
-    createdAt: new Date().toISOString(),
+export async function registerLocalAccount(payload: { email: string; name: string; password: string }): Promise<AuthResult> {
+  const result = await requestJson<{ user: SessionUser }>('/api/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
-  saveStoredAccounts(accounts);
 
-  return {
-    ok: true,
-    user: {
-      email,
-      name,
-      loggedIn: true,
-      joinedAt: new Date().toISOString(),
-    },
-  };
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, user: { ...result.data.user, loggedIn: true } };
 }
 
-export function authenticateLocalAccount(payload: { email: string; password: string }): { ok: true; user: SessionUser } | { ok: false; error: string } {
-  const email = payload.email.trim().toLowerCase();
-  const password = payload.password;
+export async function authenticateLocalAccount(payload: { email: string; password: string }): Promise<AuthResult> {
+  const result = await requestJson<{ user: SessionUser }>('/api/auth/signin', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 
-  if (!email || !password) {
-    return { ok: false, error: 'Email and password are required.' };
-  }
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, user: { ...result.data.user, loggedIn: true } };
+}
 
-  const accounts = getStoredAccounts();
-  const account = accounts.find((entry) => entry.email.toLowerCase() === email);
-  if (!account) {
-    return { ok: false, error: 'No account found for this email.' };
-  }
-  if (account.password !== password) {
-    return { ok: false, error: 'Incorrect password.' };
-  }
-
-  return {
-    ok: true,
-    user: {
-      email: account.email,
-      name: account.name,
-      loggedIn: true,
-      joinedAt: account.createdAt,
-    },
-  };
+export async function fetchCurrentUser(): Promise<SessionUser | null> {
+  const result = await requestJson<{ user: SessionUser }>('/api/auth/session', { method: 'GET' });
+  if (!result.ok) return null;
+  return { ...result.data.user, loggedIn: true };
 }
 
 export function getStoredUser(): SessionUser | null {
   try {
-    return JSON.parse(localStorage.getItem('automata_user') || 'null') as SessionUser | null;
+    return JSON.parse(localStorage.getItem(USER_STORAGE_KEY) || 'null') as SessionUser | null;
   } catch {
     return null;
   }
 }
 
-export function setSessionCookie(email: string) {
-  document.cookie = `${SESSION_COOKIE_NAME}=${encodeURIComponent(email)}; path=/; max-age=${60 * 60 * 24 * 30}; samesite=lax`;
+export function setSessionCookie(value: string) {
+  document.cookie = `${SESSION_COOKIE_NAME}=${encodeURIComponent(value)}; path=/; max-age=${60 * 60 * 24 * 30}; samesite=lax`;
 }
 
 export function clearSessionCookie() {
@@ -107,23 +74,19 @@ export function clearSessionCookie() {
 }
 
 export function persistSessionUser(user: SessionUser) {
-  localStorage.setItem('automata_user', JSON.stringify(user));
-  if (user.email) {
-    setSessionCookie(user.email);
-  }
+  localStorage.setItem(USER_STORAGE_KEY, JSON.stringify({ ...user, loggedIn: true }));
 }
 
-export function clearSessionState() {
+export async function clearSessionState() {
   try {
-    void fetch('/api/auth/signout', {
+    await fetch('/api/auth/signout', {
       method: 'POST',
       credentials: 'include',
     });
   } catch {
-    // Ignore signout network issues for local session clears.
+    // Ignore signout network issues for local cache clears.
   }
-  localStorage.removeItem('automata_user');
-  localStorage.removeItem('automata-terminal-session');
-  localStorage.removeItem('automata_active_workflow');
+
+  localStorage.removeItem(USER_STORAGE_KEY);
   clearSessionCookie();
 }

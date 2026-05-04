@@ -6,6 +6,8 @@
   --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
+  --color-primary: #1a1a1a;
+  --color-background: #fbf9f9;
   --color-blueprint-bg: #fbf9f9;
   --color-blueprint-line: #e4e2e2;
   --color-blueprint-accent: #000000;
@@ -98,6 +100,9 @@
   }
   .text-headline-md {
     @apply font-serif text-[clamp(1.55rem,6.2vw,32px)] leading-[1.3] italic;
+  }
+  .text-body-md {
+    @apply font-sans text-[15px] leading-[1.6];
   }
   .text-body-lg {
     @apply font-sans text-[18px] leading-[1.6];
