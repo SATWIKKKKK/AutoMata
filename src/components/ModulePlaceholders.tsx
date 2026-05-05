@@ -20,7 +20,7 @@ function PlaceholderSurface({
           <p className={`text-ui-label ${isDark ? 'text-[#888888]' : 'text-blueprint-muted'}`}>Coming Next</p>
           <h3 className={`mt-2 text-headline-md not-italic ${isDark ? 'text-white' : 'text-primary'}`}>{title}</h3>
         </div>
-        <div className={`rounded-full border px-3 py-1 text-ui-label ${isDark ? 'border-[#333333] text-[#888888]' : 'border-blueprint-line text-blueprint-muted'}`}>
+        <div className={`rounded-full border px-4 py-2 text-ui-label ${isDark ? 'border-[#333333] text-[#888888]' : 'border-blueprint-line text-blueprint-muted'}`}>
           Planned
         </div>
       </div>

@@ -2,6 +2,8 @@ export interface SessionUser {
   id?: string;
   email: string;
   name?: string;
+  authProvider?: string;
+  emailVerified?: boolean;
   loggedIn?: boolean;
   joinedAt?: string;
 }

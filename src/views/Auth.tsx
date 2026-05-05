@@ -1,15 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowRight, Github } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { authenticateLocalAccount, persistSessionUser, registerLocalAccount } from '../lib/session';
+import { BackgroundRippleEffect } from '../components/ui/background-ripple-effect';
 
 interface AuthProps {
   onAuthSuccess: () => void;
   onBackToLanding: () => void;
-  initialMode?: 'login' | 'signup' | 'forgot';
+  initialMode?: 'login' | 'signup';
 }
 
 export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'login' }: AuthProps) {
-  const [mode, setMode] = useState<'login' | 'signup' | 'forgot'>(initialMode);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [mode, setMode] = useState<'login' | 'signup'>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -22,9 +26,20 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
     setMode(initialMode);
   }, [initialMode]);
 
+  const oauthError = useMemo(() => {
+    const value = new URLSearchParams(location.search).get('error');
+    if (!value) return null;
+    const messages: Record<string, string> = {
+      oauth_google_not_configured: 'Google OAuth is not configured on the server yet.',
+      oauth_github_not_configured: 'GitHub OAuth is not configured on the server yet.',
+      oauth_state: 'OAuth session expired. Start the provider sign-in again.',
+      oauth_config: 'OAuth configuration is incomplete. Check the redirect URI and client secrets.',
+    };
+    return messages[value] ?? value.replace(/_/g, ' ');
+  }, [location.search]);
+
   const handleSocialClick = (provider: 'GitHub' | 'Google') => {
-    setStatusMessage(`${provider} authentication is coming soon.`);
-    window.setTimeout(() => setStatusMessage(null), 2500);
+    window.location.assign(`/api/auth/oauth/${provider.toLowerCase()}`);
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -34,11 +49,6 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
     setStatusMessage(null);
 
     try {
-      if (mode === 'forgot') {
-        setStatusMessage('Password reset delivery will be connected in the next backend pass. Use sign in for now.');
-        return;
-      }
-
       if (mode === 'signup') {
         if (password !== confirmPassword) {
           setAuthError('Password and confirm password must match.');
@@ -70,6 +80,9 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
   return (
     <div className="min-h-screen bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+      <div className="pointer-events-none fixed inset-0 opacity-25">
+        <BackgroundRippleEffect rows={9} cols={28} cellSize={54} />
+      </div>
       <button type="button" onClick={onBackToLanding} className="absolute left-6 top-6 z-20 flex items-center gap-2 text-sm text-blueprint-muted transition-colors hover:text-primary">
         <ArrowLeft size={16} /> Back to Home
       </button>
@@ -77,18 +90,16 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
       <main className="relative z-10 flex min-h-screen items-center justify-center px-4 py-6">
         <div className="w-full max-w-[480px] rounded-3xl border border-blueprint-line bg-white/90 p-6 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.04)] sm:p-8">
           <div className="mb-5">
-            <button type="button" onClick={onBackToLanding} className="text-ui-label text-blueprint-muted transition-colors hover:text-primary">
+            <button type="button" onClick={() => navigate('/dashboard')} className="text-ui-label text-blueprint-muted transition-colors hover:text-primary">
               Promptly
             </button>
             <h1 className="mt-4 text-headline-lg text-primary">
-              {mode === 'signup' ? 'Create your workspace.' : mode === 'forgot' ? 'Reset access.' : 'Welcome back.'}
+              {mode === 'signup' ? 'Create your account.' : 'Welcome back.'}
             </h1>
             <p className="mt-2 text-body-md text-blueprint-muted">
               {mode === 'signup'
-                ? 'Create your account and move straight into your prep plan, project review, and practice rounds.'
-                : mode === 'forgot'
-                  ? 'Enter your email to continue. Password reset delivery is still being connected.'
-                  : 'Sign in to continue your prep setup, review your progress, and pick up your next round.'}
+                ? 'Name, email, password. Then your focused interview setup begins.'
+                : 'Sign in to continue your dashboard, prep loop, and next session.'}
             </p>
           </div>
 
@@ -135,12 +146,10 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
               <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none transition-colors focus:border-primary" placeholder="you@company.com" />
             </div>
 
-            {mode !== 'forgot' ? (
-              <div>
-                <label className="mb-2 block text-ui-label text-blueprint-muted">Password</label>
-                <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none transition-colors focus:border-primary" placeholder="••••••••" />
-              </div>
-            ) : null}
+            <div>
+              <label className="mb-2 block text-ui-label text-blueprint-muted">Password</label>
+              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none transition-colors focus:border-primary" placeholder="••••••••" />
+            </div>
 
             {mode === 'signup' ? (
               <div>
@@ -150,10 +159,11 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
             ) : null}
 
             {authError ? <p className="text-sm text-red-600">{authError}</p> : null}
+            {oauthError ? <p className="text-sm text-red-600">{oauthError}</p> : null}
             {statusMessage ? <p className="text-sm text-blueprint-muted">{statusMessage}</p> : null}
 
             <button type="submit" disabled={submitting} className="flex w-full items-center justify-center gap-2 rounded-full bg-primary px-6 py-3 text-ui-label text-white transition-colors hover:bg-[#303031] disabled:opacity-60">
-              {mode === 'signup' ? 'Create Account' : mode === 'forgot' ? 'Continue' : 'Sign In'} <ArrowRight size={16} />
+              {mode === 'signup' ? 'Create Account' : 'Sign In'} <ArrowRight size={16} />
             </button>
           </form>
 
@@ -161,25 +171,15 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
             {mode === 'signup' ? (
               <p>
                 Already have an account?{' '}
-                <button type="button" onClick={() => setMode('login')} className="font-medium text-primary underline underline-offset-4">
-                  Sign In
-                </button>
-              </p>
-            ) : mode === 'forgot' ? (
-              <p>
-                Back to{' '}
-                <button type="button" onClick={() => setMode('login')} className="font-medium text-primary underline underline-offset-4">
+                <button type="button" onClick={() => navigate('/signin')} className="font-medium text-primary underline underline-offset-4">
                   Sign In
                 </button>
               </p>
             ) : (
-              <p className="flex flex-wrap items-center gap-2">
-                <button type="button" onClick={() => setMode('signup')} className="font-medium text-primary underline underline-offset-4">
+              <p>
+                New here?{' '}
+                <button type="button" onClick={() => navigate('/signup')} className="font-medium text-primary underline underline-offset-4">
                   Create an account
-                </button>
-                <span>or</span>
-                <button type="button" onClick={() => setMode('forgot')} className="font-medium text-primary underline underline-offset-4">
-                  reset access
                 </button>
               </p>
             )}

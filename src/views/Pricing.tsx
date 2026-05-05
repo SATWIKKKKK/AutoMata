@@ -53,7 +53,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
               onClick={() => onViewChange('landing')}
               className="font-serif italic text-2xl md:text-3xl text-primary tracking-tight"
             >
-              AUTOMATA
+              Promptly
             </button>
           </div>
 
@@ -309,7 +309,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
               onClick={() => onViewChange('landing')}
               className="font-serif text-xl text-primary tracking-tighter"
             >
-              AUTOMATA
+              Promptly
             </button>
             <span className="text-xs uppercase tracking-widest text-on-surface-variant">
               © 2026 Automata. Autonomous Intelligence.

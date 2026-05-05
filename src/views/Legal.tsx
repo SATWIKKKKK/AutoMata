@@ -13,8 +13,8 @@ function LegalShell({ title, lastUpdated, children, onViewChange }: { title: str
       <div className="fixed inset-0 blueprint-grid opacity-20 pointer-events-none" />
       <nav className="sticky top-0 z-50 border-b border-blueprint-line bg-white/80 backdrop-blur-md">
         <div className="max-w-[1440px] mx-auto flex items-center justify-between px-4 md:px-8 h-16">
-          <button onClick={() => onViewChange('landing')} className="font-serif italic text-2xl text-primary tracking-tight">AUTOMATA</button>
-          <button onClick={() => onViewChange('landing')} className="flex items-center gap-2 text-sm text-blueprint-muted hover:text-primary transition-colors">
+          <button onClick={() => onViewChange('dashboard')} className="font-serif text-2xl text-primary">Promptly</button>
+          <button onClick={() => onViewChange('dashboard')} className="flex items-center gap-2 text-sm text-blueprint-muted hover:text-primary transition-colors">
             <ArrowLeft size={16} /> Back
           </button>
         </div>

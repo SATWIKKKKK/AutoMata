@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bell, ChevronDown, Menu, Settings as SettingsIcon, LogOut } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { clearSessionState, getStoredUser } from '../lib/session';
 import { View } from '../App';
 import { cn } from '../lib/utils';
@@ -18,8 +19,10 @@ function getInitials(name?: string, email?: string) {
 }
 
 export default function Header({ view, title, onViewChange, onMenuToggle }: HeaderProps) {
+  const navigate = useNavigate();
   const user = getStoredUser();
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -36,7 +39,7 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
   const handleLogout = async () => {
     await clearSessionState();
     setDropdownOpen(false);
-    onViewChange?.('landing');
+    window.location.assign('/');
   };
 
   return (
@@ -45,10 +48,16 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
         <button type="button" onClick={onMenuToggle} className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:text-primary md:hidden">
           <Menu size={16} />
         </button>
-        <div className="hidden items-center gap-2 rounded-full border border-blueprint-line bg-[#f5f3f3] px-4 py-2 md:flex">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            navigate(`/question-bank?search=${encodeURIComponent(query.trim())}`);
+          }}
+          className="hidden items-center gap-2 rounded-full border border-blueprint-line bg-[#f5f3f3] px-4 py-2 md:flex"
+        >
           <span className="material-symbols-outlined text-[18px] text-blueprint-muted">search</span>
-          <input placeholder="Search a topic, round, or project" className="w-56 bg-transparent text-sm text-primary outline-none placeholder:text-blueprint-muted" />
-        </div>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search a topic, round, or project" className="w-56 bg-transparent text-sm text-primary outline-none placeholder:text-blueprint-muted" />
+        </form>
       </div>
 
       <div className="min-w-0 flex-1 text-center">

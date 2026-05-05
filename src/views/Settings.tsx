@@ -14,7 +14,7 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
   const [passwords, setPasswords] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
-  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [theme, setTheme] = useState('light');
   const [preferenceMessage, setPreferenceMessage] = useState<string | null>(null);
 

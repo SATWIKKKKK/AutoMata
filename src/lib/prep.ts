@@ -3,24 +3,34 @@ export const DOMAIN_LABELS: Record<string, string> = {
   backend: 'Backend',
   'full-stack': 'Full Stack',
   'ai-ml': 'AI / ML',
+  devops: 'DevOps',
+  data: 'Data Engineering',
 };
 
 export const INTERVIEW_TYPE_LABELS: Record<string, string> = {
   internship: 'Internship',
-  'new-grad': 'New Grad',
-  experienced: 'Experienced',
+  'full-time': 'Full-time',
+  faang: 'FAANG style',
+  startup: 'Product startup',
+  service: 'Service company',
+  general: 'General prep',
 };
 
 export const COMPANY_TYPE_LABELS: Record<string, string> = {
-  startup: 'Startup',
+  startup: 'Product Startup',
   product: 'Product Company',
   'tier-1': 'Tier-1',
+  faang: 'FAANG Style',
+  service: 'Service Company',
+  general: 'General Prep',
 };
 
 export const TIMELINE_LABELS: Record<string, string> = {
-  '3-day': '3 Days',
-  '7-day': '7 Days',
-  '30-day': '30 Days',
+  today: 'Today',
+  '3-day': '3 days',
+  '7-day': '1 week',
+  '30-day': '1 month',
+  exploring: 'Just exploring',
 };
 
 export const EXPERIENCE_LABELS: Record<string, string> = {
@@ -68,6 +78,7 @@ export interface ProjectAnalysis {
   commonFollowUps: string[];
   weakPoints: string[];
   improvementSuggestions: string[];
+  projectSpecificQuestions?: string[];
 }
 
 export interface ManualProjectAnalysis {
@@ -107,11 +118,12 @@ type ApiResult<T> =
   | { ok: false; error: string };
 
 const STORAGE_KEY = 'promptly_prep_workspace';
+const ONBOARDING_COMPLETE_KEY = 'promptly_onboarding_complete';
 
 export const DEFAULT_PREP_SELECTIONS: PrepSelections = {
   domain: 'frontend',
   interviewType: 'internship',
-  companyType: 'startup',
+  companyType: 'general',
   timeline: '7-day',
   experienceLevel: 'intermediate',
   repositoryUrl: '',
@@ -213,4 +225,16 @@ export async function analyzeManualDescription(manualDescription: string) {
 
 export async function generateDiagnosticQuestions(payload: Pick<PrepSelections, 'domain' | 'experienceLevel'>) {
   return postJson<DiagnosticQuestion[]>('/api/prep/diagnostic', payload);
+}
+
+export function isOnboardingComplete() {
+  try {
+    return localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function markOnboardingComplete() {
+  localStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
 }

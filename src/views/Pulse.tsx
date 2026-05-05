@@ -21,7 +21,7 @@ export default function Pulse() {
       <main className="relative z-10 mx-auto w-full max-w-360 space-y-8">
         <header className="flex flex-col gap-6 border-b border-blueprint-line pb-6 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
-            <button type="button" onClick={() => navigate('/terminal')} className="text-blueprint-muted transition-colors hover:text-primary">
+            <button type="button" onClick={() => navigate('/mock-interview')} className="text-blueprint-muted transition-colors hover:text-primary">
               <span className="material-symbols-outlined">arrow_back</span>
             </button>
             <div>
@@ -33,7 +33,7 @@ export default function Pulse() {
             <button className="rounded-full border border-blueprint-line bg-white px-6 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
               Save Summary
             </button>
-            <button type="button" onClick={() => navigate('/workflows')} className="rounded-full bg-primary px-6 py-2 text-ui-label text-white transition-colors hover:bg-[#303031]">
+            <button type="button" onClick={() => navigate('/practice-tracks')} className="rounded-full bg-primary px-6 py-2 text-ui-label text-white transition-colors hover:bg-[#303031]">
               Back to Tracks
             </button>
           </div>
@@ -104,7 +104,7 @@ export default function Pulse() {
               <span className="text-ui-label text-blueprint-muted">Your Next 3 Days</span>
               <h2 className="mt-1 text-headline-lg text-primary">Follow-Up Plan</h2>
             </div>
-            <button type="button" onClick={() => navigate('/workflows')} className="text-ui-label text-primary transition-colors hover:text-blueprint-muted">
+            <button type="button" onClick={() => navigate('/practice-tracks')} className="text-ui-label text-primary transition-colors hover:text-blueprint-muted">
               View All Tracks
             </button>
           </div>

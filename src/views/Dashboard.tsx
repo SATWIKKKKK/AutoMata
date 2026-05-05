@@ -1,5 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { GapAnalysisDashboard } from '../components/ModulePlaceholders';
+import { PlaceholdersAndVanishInput } from '../components/ui/placeholders-and-vanish-input';
+import { fetchQuestionStats } from '../lib/questionBankApi';
 import {
   COMPANY_TYPE_LABELS,
   DOMAIN_LABELS,
@@ -38,7 +41,10 @@ function buildUpcomingSessions(domain: string) {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const workspace = getStoredPrepWorkspace();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [questionCount, setQuestionCount] = useState(0);
   const plan = workspace.prepPlan;
   const domainLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend';
   const interviewTypeLabel = INTERVIEW_TYPE_LABELS[workspace.selections.interviewType] ?? 'Interview';
@@ -48,6 +54,15 @@ export default function Dashboard() {
   const weakPoints = workspace.repoAnalysis?.weakPoints ?? workspace.manualAnalysis?.gapsThatMightExist ?? ['State updates under async pressure', 'Follow-up depth on project tradeoffs'];
   const prepScore = Math.min(96, 62 + (plan ? 12 : 0) + (workspace.repoAnalysis || workspace.manualAnalysis ? 10 : 0) + (workspace.diagnosticQuestions.length ? 8 : 0));
   const sessions = buildUpcomingSessions(workspace.selections.domain);
+  const projectTopics = workspace.repoAnalysis?.projectSpecificQuestions?.length
+    ? workspace.repoAnalysis.projectSpecificQuestions
+    : (workspace.repoAnalysis?.interviewableTopics ?? workspace.manualAnalysis?.projectSpecificQuestions ?? workspace.manualAnalysis?.whatInterviewerWillFocus ?? []);
+  const searchPlaceholders = [
+    `Search ${domainLabel} questions`,
+    'Find scenario drills by weak area',
+    'Open FAANG tagged questions',
+    'Practice project follow-ups',
+  ];
   const signals = [
     {
       title: `Spend the next block on ${weakPoints[0]}.`,
@@ -66,6 +81,18 @@ export default function Dashboard() {
     },
   ];
 
+  useEffect(() => {
+    let ignore = false;
+    void fetchQuestionStats().then((result) => {
+      if (!result.ok || ignore) return;
+      const matching = result.data.find((item) => item.id === workspace.selections.domain);
+      setQuestionCount(matching?.total ?? 0);
+    });
+    return () => {
+      ignore = true;
+    };
+  }, [workspace.selections.domain]);
+
   return (
     <div className="min-h-full bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
@@ -76,19 +103,29 @@ export default function Dashboard() {
             <p className="mt-3 text-body-lg text-blueprint-muted">
               See what matters most for your {domainLabel.toLowerCase()} {interviewTypeLabel.toLowerCase()} target and use that to choose your next round.
             </p>
+            <div className="mt-6 max-w-xl">
+              <PlaceholdersAndVanishInput
+                placeholders={searchPlaceholders}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  navigate(`/question-bank?search=${encodeURIComponent(searchQuery.trim())}`);
+                }}
+              />
+            </div>
           </div>
           <div className="hidden justify-end lg:flex">
-            <button className="rounded-full border border-blueprint-line bg-white px-5 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
-              Review Setup
+            <button type="button" onClick={() => navigate('/question-bank')} className="rounded-full border border-blueprint-line bg-white px-5 py-3 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
+              {questionCount} Questions Available
             </button>
           </div>
         </section>
 
         <section className="grid gap-6 lg:grid-cols-12">
-          <article className="rounded-xl border border-blueprint-line bg-white/80 p-8 shadow-[0_8px_30px_rgba(0,0,0,0.04)] lg:col-span-4">
+          <article className="surface-card lg:col-span-4">
             <div className="flex items-start justify-between gap-4">
               <span className="text-ui-label text-blueprint-muted">Prep Readiness</span>
-              <span className="rounded-full border border-blueprint-line bg-[#f5f3f3] px-3 py-1 text-ui-label text-primary">
+              <span className="rounded-full border border-blueprint-line bg-[#f5f3f3] px-4 py-2 text-ui-label text-primary">
                 Updated Today
               </span>
             </div>
@@ -104,7 +141,29 @@ export default function Dashboard() {
 
           <GapAnalysisDashboard className="lg:col-span-8" />
 
-          <article className="rounded-xl border border-blueprint-line bg-white/80 p-8 shadow-[0_8px_30px_rgba(0,0,0,0.04)] lg:col-span-6">
+          <article className="surface-card lg:col-span-12">
+            <div className="mb-6 flex flex-col gap-4 border-b border-blueprint-line pb-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <h2 className="text-headline-md text-primary not-italic">Project Intelligence</h2>
+                <p className="mt-2 text-body-md text-blueprint-muted">
+                  {projectTopics.length ? 'Top interviewer prompts from your project context.' : 'Add a project to unlock repo-specific questions and stricter follow-ups.'}
+                </p>
+              </div>
+              <button type="button" onClick={() => navigate('/onboarding')} className="rounded-full border border-blueprint-line bg-white px-5 py-3 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
+                {projectTopics.length ? 'Update Project' : 'Add Project'}
+              </button>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              {(projectTopics.length ? projectTopics.slice(0, 3) : ['Explain the most important project tradeoff', 'Add a repository URL for code-aware prompts', 'Practice domain-level follow-ups']).map((topic, index) => (
+                <div key={topic} className="surface-inset">
+                  <span className="rounded-full bg-[#efeded] px-3 py-1.5 text-ui-label text-blueprint-muted">Prompt {index + 1}</span>
+                  <p className="mt-4 text-body-md font-medium text-primary">{topic}</p>
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="surface-card lg:col-span-6">
             <div className="mb-6 flex items-end justify-between border-b border-blueprint-line pb-4">
               <h2 className="text-headline-md text-primary not-italic">Upcoming Sessions</h2>
               <button className="text-ui-label text-blueprint-muted transition-colors hover:text-primary">
@@ -123,13 +182,13 @@ export default function Dashboard() {
                       <p className="mt-1 text-body-md text-blueprint-muted">{session.meta}</p>
                     </div>
                   </div>
-                  <button className="text-ui-label text-blueprint-muted transition-colors hover:text-primary">Open</button>
+                  <button type="button" onClick={() => navigate('/practice-tracks')} className="text-ui-label text-blueprint-muted transition-colors hover:text-primary">Open</button>
                 </div>
               ))}
             </div>
           </article>
 
-          <article className="rounded-xl border border-blueprint-line bg-white/80 p-8 shadow-[0_8px_30px_rgba(0,0,0,0.04)] lg:col-span-6">
+          <article className="surface-card lg:col-span-6">
             <div className="mb-6 border-b border-blueprint-line pb-4">
               <h2 className="text-headline-md text-primary not-italic">Prep Insights</h2>
             </div>

@@ -3,10 +3,9 @@ import {
   Activity,
   BarChart2,
   ChevronLeft,
-  Cpu,
   FileText,
   Home,
-  Layers,
+  LibraryBig,
   Menu,
   Settings,
   Terminal,
@@ -25,13 +24,12 @@ interface SidebarProps {
 
 const NAV_ITEMS: Array<{ id: View; label: string; icon: React.ElementType }> = [
   { id: 'dashboard', label: 'Prep Overview', icon: Home },
-  { id: 'builder', label: 'Prep Setup', icon: Cpu },
   { id: 'workflows', label: 'Practice Tracks', icon: Workflow },
   { id: 'registry', label: 'Scenario Round', icon: FileText },
   { id: 'editor', label: 'Coding Round', icon: Terminal },
   { id: 'terminal', label: 'Mock Interview', icon: Activity },
+  { id: 'questionBank', label: 'Question Bank', icon: LibraryBig },
   { id: 'analytics', label: 'Gap Review', icon: BarChart2 },
-  { id: 'templates', label: 'Archive', icon: Layers },
 ];
 
 function NavButton({
@@ -76,7 +74,7 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
       <div className={cn('mb-8 flex items-center', isCollapsed ? 'justify-center' : 'justify-between')}>
         {!isCollapsed ? (
           <button type="button" onClick={() => onViewChange('dashboard')} className="text-left">
-            <div className="text-2xl font-black tracking-tight text-primary">PROMPTLY</div>
+            <div className="font-serif text-3xl leading-none text-primary">Promptly</div>
             <p className="mt-1 text-ui-label text-blueprint-muted">Interview Prep</p>
           </button>
         ) : null}

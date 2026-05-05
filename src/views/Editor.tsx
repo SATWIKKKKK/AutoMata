@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CodingPlayground } from '../components/ModulePlaceholders';
+import RoundGuard from '../components/RoundGuard';
 import { DOMAIN_LABELS, getStoredPrepWorkspace } from '../lib/prep';
+import { startRoundAttempt, submitRoundAttempt, type StoredRoundAttempt } from '../lib/questionBankApi';
 
 type WorkflowDAG = unknown;
 
@@ -10,116 +11,118 @@ interface EditorProps {
   onSave: (dag: WorkflowDAG) => void;
 }
 
-const CHALLENGES: Record<string, { tag: string; duration: string; title: string; summary: string; constraints: string[]; exampleInput: string; expectedOutput: string; fileName: string; language: string }> = {
-  frontend: {
-    tag: 'Frontend',
-    duration: '45 Min',
-    title: 'Stabilize live search results',
-    summary: 'Build a search flow that stays correct when requests resolve out of order and the user keeps typing.',
-    constraints: [
-      'Keep the latest query result on screen even if older requests finish later.',
-      'Show loading and error states without breaking the current results.',
-      'Explain how you would test the race condition.',
-    ],
-    exampleInput: 'query changes quickly from "r" to "react" while earlier requests are still in flight',
-    expectedOutput: 'Only the latest query updates the results and stale responses are ignored safely.',
-    fileName: 'SearchResults.tsx',
-    language: 'TypeScript',
-  },
-  backend: {
-    tag: 'Backend',
-    duration: '45 Min',
-    title: 'Make webhook processing idempotent',
-    summary: 'Handle duplicate webhook deliveries without double-updating the database or sending duplicate side effects.',
-    constraints: [
-      'Prevent duplicate writes when the provider retries the same event.',
-      'Return a safe response even when the worker is slow.',
-      'Explain how you would store replay protection.',
-    ],
-    exampleInput: 'the same payment event is delivered three times within 20 seconds',
-    expectedOutput: 'The invoice is updated once, side effects are emitted once, and retries remain safe.',
-    fileName: 'paymentWebhook.ts',
-    language: 'TypeScript',
-  },
-  'full-stack': {
-    tag: 'Full Stack',
-    duration: '50 Min',
-    title: 'Keep optimistic UI and server state aligned',
-    summary: 'Wire a client mutation to the server while handling partial failure without leaving the UI in a fake success state.',
-    constraints: [
-      'Show the user what is pending and what failed.',
-      'Avoid duplicate submissions when they click twice.',
-      'Explain how the client recovers after a failed write.',
-    ],
-    exampleInput: 'a save button is clicked twice while the first write is still pending',
-    expectedOutput: 'The UI stays responsive, only one write is accepted, and recovery is clear after failure.',
-    fileName: 'CheckoutFlow.ts',
-    language: 'TypeScript',
-  },
-  'ai-ml': {
-    tag: 'AI / ML',
-    duration: '45 Min',
-    title: 'Filter weak retrieval before answer generation',
-    summary: 'Improve a retrieval pipeline so low-signal chunks do not poison the final answer under time pressure.',
-    constraints: [
-      'Reject or down-rank poor matches before they reach the prompt.',
-      'Add one fallback when retrieval confidence is low.',
-      'Explain how you would evaluate the change.',
-    ],
-    exampleInput: 'the retriever returns loosely related chunks with low semantic overlap',
-    expectedOutput: 'The pipeline uses stronger context selection and degrades gracefully when confidence is low.',
-    fileName: 'retrievalPipeline.py',
-    language: 'Python',
-  },
-};
-
 export default function Editor(_props: EditorProps) {
   const navigate = useNavigate();
   const workspace = getStoredPrepWorkspace();
-  const challenge = CHALLENGES[workspace.selections.domain] ?? CHALLENGES.frontend;
+  const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
+  const [codeAnswer, setCodeAnswer] = useState('');
+  const [notes, setNotes] = useState('');
+  const [loadingAttempt, setLoadingAttempt] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [draftChecks, setDraftChecks] = useState<string[]>([]);
+  const question = attempt?.questions[0] ?? null;
+  const questionLabel = useMemo(() => DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend', [workspace.selections.domain]);
+
+  const startAttempt = useCallback(async () => {
+    if (attempt || loadingAttempt) return;
+    setLoadingAttempt(true);
+    setError(null);
+    const result = await startRoundAttempt({
+      roundType: 'coding-round',
+      questionType: 'coding',
+      domain: workspace.selections.domain,
+      limit: 1,
+      durationMinutes: 45,
+    });
+    setLoadingAttempt(false);
+    if ('error' in result) {
+      throw new Error(result.error);
+    }
+    setAttempt(result.data);
+    setCodeAnswer(result.data.questions[0]?.codeSnippet ?? '');
+  }, [attempt, loadingAttempt, workspace.selections.domain]);
+
+  const runDraftChecks = () => {
+    const nextChecks = [
+      codeAnswer.trim().length >= 80 ? 'Substantial solution draft captured.' : 'Expand the draft so the main logic is visible.',
+      /\breturn\b|\byield\b/.test(codeAnswer) ? 'Return path found.' : 'Add an explicit return path.',
+      /\bif\b|\belse\b|\btry\b|\bcatch\b/.test(codeAnswer) ? 'Conditional or recovery handling found.' : 'Show one clear edge-case or recovery branch.',
+      /error|throw|validate|guard|abort|rollback|idempot|dedup|cache|cleanup/i.test(codeAnswer + notes) ? 'Defensive handling or production note found.' : 'Explain one defensive or production-oriented check.',
+    ];
+    setDraftChecks(nextChecks);
+  };
+
+  const finishRound = useCallback(async (autoSubmitted = false) => {
+    if (!attempt || submitting) return;
+    setSubmitting(true);
+    const result = await submitRoundAttempt(attempt.id, {
+      answers: [{ questionId: question?.id ?? '', codeAnswer, notes }],
+      autoSubmitted,
+      timeSpentSeconds: attempt.durationMinutes * 60,
+    });
+    setSubmitting(false);
+    if ('error' in result) {
+      setError(result.error);
+      return;
+    }
+    setAttempt(result.data);
+    if (!autoSubmitted) navigate('/results/coding-round');
+  }, [attempt, codeAnswer, notes, navigate, question?.id, submitting]);
 
   return (
     <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-12">
+      <RoundGuard roundName="Coding Round" durationMinutes={45} resultsPath="/results/coding-round" onStart={startAttempt} onExpire={() => finishRound(true)}>
+        {({ formattedTime, inputsLocked }) => (
+          <>
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
       <main className="relative z-10 mx-auto w-full max-w-360">
         <div className="grid gap-8 lg:grid-cols-12">
           <section className="space-y-8 lg:col-span-5 lg:border-r lg:border-blueprint-line/40 lg:pr-8">
+            {loadingAttempt ? <p className="text-body-md text-blueprint-muted">Loading coding prompt…</p> : null}
+            {error ? <p className="text-body-md text-red-600">{error}</p> : null}
             <div className="space-y-4">
               <div className="flex items-center gap-3">
-                <span className="rounded-full bg-[#e4e2e2] px-3 py-1 text-ui-label text-blueprint-muted">{challenge.tag}</span>
+                <span className="rounded-full bg-[#e4e2e2] px-3 py-1 text-ui-label text-blueprint-muted">{questionLabel}</span>
                 <span className="flex items-center gap-1 text-ui-label text-blueprint-muted">
                   <span className="material-symbols-outlined text-[16px]">schedule</span>
-                  {challenge.duration}
+                  {formattedTime} left
                 </span>
               </div>
-              <p className="text-ui-label text-blueprint-muted">{DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend'} Coding Round</p>
-              <h1 className="text-headline-lg text-primary">{challenge.title}</h1>
+              <p className="text-ui-label text-blueprint-muted">{questionLabel} Coding Round</p>
+              <h1 className="text-headline-lg text-primary">{question?.topic ?? 'Coding prompt'}</h1>
               <p className="text-body-lg text-blueprint-muted">
-                {challenge.summary}
+                {question?.questionText ?? 'Start the round to load a coding question.'}
               </p>
             </div>
 
             <div className="space-y-6">
               <div>
                 <h2 className="border-b border-blueprint-line/50 pb-2 text-ui-label text-primary">What matters in this answer</h2>
-                <ul className="space-y-2 pt-3 text-body-md text-blueprint-muted">
-                  {challenge.constraints.map((item) => (
-                    <li key={item} className="flex items-start gap-2"><span className="material-symbols-outlined text-[14px]">check_circle</span>{item}</li>
-                  ))}
-                </ul>
+                <p className="pt-3 text-body-md text-blueprint-muted">{question?.explanation ?? 'Your result will store the exact draft, basic evaluation signals, and the next study step for this attempt.'}</p>
               </div>
               <div>
-                <h2 className="border-b border-blueprint-line/50 pb-2 text-ui-label text-primary">Example Input</h2>
+                <h2 className="border-b border-blueprint-line/50 pb-2 text-ui-label text-primary">Starter Prompt</h2>
                 <div className="mt-3 rounded-lg border border-blueprint-line/30 bg-[#efeded] p-4 text-body-md text-primary">
-                  {challenge.exampleInput}
+                  {question?.questionText ?? 'Question details load once the timed round starts.'}
                 </div>
               </div>
               <div>
-                <h2 className="border-b border-blueprint-line/50 pb-2 text-ui-label text-primary">Expected Output</h2>
+                <h2 className="border-b border-blueprint-line/50 pb-2 text-ui-label text-primary">Stored Answer Key</h2>
                 <div className="mt-3 rounded-lg border border-blueprint-line/30 bg-[#efeded] p-4 text-body-md text-primary">
-                  {challenge.expectedOutput}
+                  {question?.correctAnswer ?? 'The expected answer pattern for this question will appear in your results.'}
                 </div>
               </div>
+              {draftChecks.length ? (
+                <div>
+                  <h2 className="border-b border-blueprint-line/50 pb-2 text-ui-label text-primary">Draft Checks</h2>
+                  <ul className="space-y-2 pt-3 text-body-md text-blueprint-muted">
+                    {draftChecks.map((item) => (
+                      <li key={item} className="flex items-start gap-2"><span className="material-symbols-outlined text-[14px]">check_circle</span>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
           </section>
 
@@ -131,16 +134,30 @@ export default function Editor(_props: EditorProps) {
                   <div className="h-3 w-3 rounded-full bg-[#333333]" />
                   <div className="h-3 w-3 rounded-full bg-[#333333]" />
                 </div>
-                <span className="text-ui-label normal-case">{challenge.fileName}</span>
+                <span className="text-ui-label normal-case">{question?.topic ?? 'solution.ts'}</span>
               </div>
               <div className="flex items-center gap-3 text-[#888888]">
-                <span className="text-ui-label normal-case">{challenge.language}</span>
+                <span className="text-ui-label normal-case">Code Draft</span>
                 <span className="material-symbols-outlined text-[18px]">settings</span>
                 <span className="material-symbols-outlined text-[18px]">fullscreen</span>
               </div>
             </div>
             <div className="min-h-[440px] border-b border-[#333333] bg-[#1A1A1A] p-4">
-              <CodingPlayground variant="dark" className="h-full border-0 bg-transparent p-0 shadow-none" />
+              <textarea
+                value={codeAnswer}
+                onChange={(event) => setCodeAnswer(event.target.value)}
+                disabled={inputsLocked || !question}
+                spellCheck={false}
+                className="h-[360px] w-full resize-none rounded-lg border border-[#333333] bg-[#111111] p-4 font-mono text-[13px] leading-6 text-[#d4d4d4] outline-none disabled:cursor-not-allowed disabled:opacity-70"
+                placeholder="Your coding answer appears here once the round starts."
+              />
+              <textarea
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                disabled={inputsLocked || !question}
+                className="mt-4 h-24 w-full resize-none rounded-lg border border-[#333333] bg-[#111111] p-4 text-body-md text-[#d4d4d4] outline-none disabled:cursor-not-allowed disabled:opacity-70"
+                placeholder="Optional notes: explain tradeoffs, edge cases, or how you would validate the solution."
+              />
             </div>
             <div className="flex h-16 items-center justify-between bg-[#141414] px-4">
               <div className="flex items-center gap-4 text-[#888888] text-ui-label normal-case">
@@ -148,17 +165,23 @@ export default function Editor(_props: EditorProps) {
                 <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[14px]">fact_check</span>Checks</span>
               </div>
               <div className="flex items-center gap-3">
-                <button className="rounded-full border border-[#555555] px-4 py-2 text-ui-label text-[#d4d4d4] transition-colors hover:bg-[#333333]">
-                  Run Checks
+                <button type="button" onClick={runDraftChecks} disabled={inputsLocked || !question} className="rounded-full border border-[#555555] px-4 py-2 text-ui-label text-[#d4d4d4] transition-colors hover:bg-[#333333] disabled:cursor-not-allowed disabled:opacity-60">
+                  Validate Draft
                 </button>
-                <button type="button" onClick={() => navigate('/terminal')} className="rounded-full bg-white px-6 py-2 text-ui-label text-black transition-colors hover:bg-[#efeded]">
-                  Continue to Mock Round
+                <button type="button" onClick={() => navigate('/practice-tracks')} className="rounded-full border border-[#555555] px-4 py-2 text-ui-label text-[#d4d4d4] transition-colors hover:bg-[#333333]">
+                  Exit Round
+                </button>
+                <button type="button" disabled={inputsLocked || submitting || !question} onClick={() => { void finishRound(false); }} className="rounded-full bg-white px-6 py-2 text-ui-label text-black transition-colors hover:bg-[#efeded] disabled:cursor-not-allowed disabled:opacity-60">
+                  {submitting ? 'Submitting…' : 'Submit Coding Round'}
                 </button>
               </div>
             </div>
           </section>
         </div>
       </main>
+          </>
+        )}
+      </RoundGuard>
     </div>
   );
 }
