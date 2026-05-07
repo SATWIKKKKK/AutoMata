@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { GapAnalysisDashboard } from '../components/ModulePlaceholders';
 import { PlaceholdersAndVanishInput } from '../components/ui/placeholders-and-vanish-input';
 import { fetchQuestionStats } from '../lib/questionBankApi';
+import { listGithubRepos } from '../lib/githubRepos';
 import {
   COMPANY_TYPE_LABELS,
   DOMAIN_LABELS,
@@ -45,6 +46,8 @@ export default function Dashboard() {
   const workspace = getStoredPrepWorkspace();
   const [searchQuery, setSearchQuery] = useState('');
   const [questionCount, setQuestionCount] = useState(0);
+  const [repoCount, setRepoCount] = useState(0);
+  const [pendingRepoName, setPendingRepoName] = useState<string | null>(null);
   const plan = workspace.prepPlan;
   const domainLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend';
   const interviewTypeLabel = INTERVIEW_TYPE_LABELS[workspace.selections.interviewType] ?? 'Interview';
@@ -93,6 +96,18 @@ export default function Dashboard() {
     };
   }, [workspace.selections.domain]);
 
+  useEffect(() => {
+    let ignore = false;
+    void listGithubRepos().then((data) => {
+      if (ignore) return;
+      setRepoCount(data.repos.length);
+      setPendingRepoName(data.pendingJobs[0]?.repoName ?? null);
+    }).catch(() => undefined);
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
   return (
     <div className="min-h-full bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
@@ -122,6 +137,12 @@ export default function Dashboard() {
         </section>
 
         <section className="grid gap-6 lg:grid-cols-12">
+          {pendingRepoName ? (
+            <button type="button" onClick={() => navigate('/github-repos')} className="rounded-lg border border-amber-200 bg-amber-50 px-5 py-4 text-left text-body-md text-amber-800 lg:col-span-12">
+              Your repo analysis for {pendingRepoName} is still processing. View results when a result exists.
+            </button>
+          ) : null}
+
           <article className="surface-card lg:col-span-4">
             <div className="flex items-start justify-between gap-4">
               <span className="text-ui-label text-blueprint-muted">Prep Readiness</span>
@@ -162,6 +183,16 @@ export default function Dashboard() {
               ))}
             </div>
           </article>
+
+          <button type="button" onClick={() => navigate('/github-repos')} className="surface-card text-left transition-colors hover:bg-[#f7f5f5] lg:col-span-12">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-headline-md text-primary not-italic">GitHub Repos Scanned</h2>
+                <p className="mt-2 text-body-md text-blueprint-muted">Open your scanned repos and review generated project question sets.</p>
+              </div>
+              <span className="w-fit rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary">{repoCount} repos</span>
+            </div>
+          </button>
 
           <article className="surface-card lg:col-span-6">
             <div className="mb-6 flex items-end justify-between border-b border-blueprint-line pb-4">

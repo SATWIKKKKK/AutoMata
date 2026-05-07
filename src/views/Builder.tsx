@@ -1,9 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { View } from '../App';
+import { GithubScanOverlay } from '../components/GithubRepoScanner';
+import { isValidGithubRepoUrl } from '../lib/githubRepos';
 import {
-  analyzeManualDescription,
-  analyzeRepository,
   DEFAULT_PREP_SELECTIONS,
   DOMAIN_LABELS,
   INTERVIEW_TYPE_LABELS,
@@ -35,14 +35,6 @@ const COMPANY_BY_INTERVIEW: Record<string, string> = {
   'full-time': 'product',
 };
 
-const SCAN_STEPS = [
-  'Reading repository tree',
-  'Finding route and API files',
-  'Checking auth and middleware',
-  'Reviewing schema and model files',
-  'Building project-only interview prompts',
-];
-
 function optionBody(id: string) {
   const bodies: Record<string, string> = {
     'full-stack': 'UI, API, data flow, auth, database choices.',
@@ -63,11 +55,9 @@ export default function Builder(_props: BuilderProps) {
   const [interviewType, setInterviewType] = useState(storedWorkspace.selections.interviewType || DEFAULT_PREP_SELECTIONS.interviewType);
   const [timeline, setTimeline] = useState(storedWorkspace.selections.timeline || DEFAULT_PREP_SELECTIONS.timeline);
   const [repositoryUrl, setRepositoryUrl] = useState(storedWorkspace.selections.repositoryUrl || '');
-  const [manualDescription, setManualDescription] = useState(storedWorkspace.selections.manualDescription || '');
-  const [projectMode, setProjectMode] = useState<'repo' | 'manual' | 'skip'>('repo');
+  const [projectMode, setProjectMode] = useState<'repo' | 'skip'>('repo');
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loadingIndex, setLoadingIndex] = useState(0);
+  const [scanningUrl, setScanningUrl] = useState<string | null>(null);
 
   const companyType = COMPANY_BY_INTERVIEW[interviewType] ?? 'general';
   const progress = [0, 1, 2, 3];
@@ -82,7 +72,7 @@ export default function Builder(_props: BuilderProps) {
         timeline,
         experienceLevel: storedWorkspace.selections.experienceLevel,
         repositoryUrl: projectMode === 'repo' ? repositoryUrl : '',
-        manualDescription: projectMode === 'manual' ? manualDescription : '',
+        manualDescription: '',
       },
     };
 
@@ -92,8 +82,8 @@ export default function Builder(_props: BuilderProps) {
       setError('Paste a GitHub repository URL or choose skip.');
       return;
     }
-    if (projectMode === 'manual' && !manualDescription.trim()) {
-      setError('Describe your project or choose skip.');
+    if (projectMode === 'repo' && !isValidGithubRepoUrl(repositoryUrl)) {
+      setError('Please paste a valid GitHub repository URL.');
       return;
     }
 
@@ -103,33 +93,7 @@ export default function Builder(_props: BuilderProps) {
       return;
     }
 
-    setLoading(true);
-    const interval = window.setInterval(() => {
-      setLoadingIndex((index) => (index + 1) % SCAN_STEPS.length);
-    }, 1400);
-
-    if (projectMode === 'repo') {
-      const result = await analyzeRepository(repositoryUrl);
-      window.clearInterval(interval);
-      setLoading(false);
-      if ('error' in result) {
-        setError(result.error);
-        return;
-      }
-      updatePrepWorkspace({ ...baseUpdate, repoAnalysis: result.data, meta: { repo: result.meta } });
-    } else {
-      const result = await analyzeManualDescription(manualDescription);
-      window.clearInterval(interval);
-      setLoading(false);
-      if ('error' in result) {
-        setError(result.error);
-        return;
-      }
-      updatePrepWorkspace({ ...baseUpdate, manualAnalysis: result.data, meta: { manual: result.meta } });
-    }
-
-    markOnboardingComplete();
-    navigate('/dashboard');
+    setScanningUrl(repositoryUrl.trim());
   };
 
   const canGoNext = (
@@ -155,16 +119,7 @@ export default function Builder(_props: BuilderProps) {
             </div>
           </div>
 
-          {loading ? (
-            <section className="flex min-h-[420px] flex-col items-center justify-center text-center">
-              <p className="text-ui-label text-blueprint-muted">AI repo scanner</p>
-              <h1 className="mt-3 text-headline-lg text-primary">{SCAN_STEPS[loadingIndex]}</h1>
-              <p className="mt-4 max-w-xl text-body-lg text-blueprint-muted">
-                This can take a few seconds. We are building the project report that powers project-only questions.
-              </p>
-            </section>
-          ) : (
-            <>
+          <>
               {step === 0 ? (
                 <section>
                   <p className="text-ui-label text-blueprint-muted">Step 1 of 4</p>
@@ -231,7 +186,7 @@ export default function Builder(_props: BuilderProps) {
                   <p className="text-ui-label text-blueprint-muted">Step 4 of 4</p>
                   <h1 className="mt-3 text-headline-lg text-primary">Add your project.</h1>
                   <p className="mt-3 max-w-2xl text-body-lg text-blueprint-muted">
-                    Repo or text unlocks project-intelligence features. Skip keeps domain-based prep active.
+                    Paste a public GitHub repository to build code-specific interview questions, or skip and continue without a project attached.
                   </p>
                   <div className="mt-8 grid gap-4">
                     <button
@@ -249,23 +204,6 @@ export default function Builder(_props: BuilderProps) {
                         }}
                         placeholder="https://github.com/owner/repo"
                         className="mt-4 w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none placeholder:text-blueprint-muted focus:border-primary"
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setProjectMode('manual')}
-                      className={`rounded-xl border p-5 text-left transition-colors ${projectMode === 'manual' ? 'border-primary bg-white' : 'border-blueprint-line bg-[#fbf9f9]'}`}
-                    >
-                      <p className="text-body-lg font-semibold text-primary">Describe your project</p>
-                      <textarea
-                        rows={4}
-                        value={manualDescription}
-                        onChange={(event) => {
-                          setProjectMode('manual');
-                          setManualDescription(event.target.value);
-                        }}
-                        placeholder="Stack, features, auth, database, and the tradeoffs you made..."
-                        className="mt-4 w-full resize-none border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none placeholder:text-blueprint-muted focus:border-primary"
                       />
                     </button>
                     <button
@@ -292,14 +230,14 @@ export default function Builder(_props: BuilderProps) {
                   </button>
                 ) : (
                   <button type="button" onClick={finishOnboarding} className="rounded-full bg-primary px-8 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">
-                    Continue to Dashboard
+                    {projectMode === 'repo' ? 'Submit' : 'Skip for Now'}
                   </button>
                 )}
               </footer>
             </>
-          )}
         </div>
       </main>
+      {scanningUrl ? <GithubScanOverlay repoUrl={scanningUrl} onClose={() => setScanningUrl(null)} onError={setError} onComplete={markOnboardingComplete} /> : null}
     </div>
   );
 }

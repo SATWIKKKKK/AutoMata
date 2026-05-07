@@ -95,6 +95,31 @@ type DiagnosticQuestion = {
   topicTag: string;
 };
 
+type GithubQuestion = {
+  id: string;
+  questionText: string;
+  type: 'mcq' | 'open' | 'coding' | 'scenario';
+  difficulty: 'easy' | 'medium' | 'hard';
+  fileReference: string;
+  conceptTag: string;
+  options?: string[];
+  correctAnswer?: string;
+};
+
+type GithubQuestionSection = {
+  sectionId: string;
+  sectionTitle: string;
+  sectionDescription: string;
+  questions: GithubQuestion[];
+};
+
+type GithubQuestionSet = {
+  projectName: string;
+  projectSummary: string;
+  sections: GithubQuestionSection[];
+  warnings?: string[];
+};
+
 type ModelConfig =
   | { provider: 'openai-compat'; apiKey: string; model: string; baseUrl: string }
   | { provider: 'gemini'; apiKey: string; model: string };
@@ -235,7 +260,40 @@ function normalizeDiagnosticQuestions(payload: unknown): DiagnosticQuestion[] {
     .filter((question) => question.question && question.correctAnswer && question.topicTag);
 }
 
-function resolveModelConfig(): ModelConfig {
+function normalizeGithubQuestionSet(payload: unknown): GithubQuestionSet {
+  const source = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  const sections = Array.isArray(source.sections) ? source.sections : [];
+  return {
+    projectName: String(source.projectName ?? '').trim(),
+    projectSummary: String(source.projectSummary ?? '').trim(),
+    warnings: toStringArray(source.warnings),
+    sections: sections.map((section) => {
+      const sectionSource = section && typeof section === 'object' ? section as Record<string, unknown> : {};
+      const questions = Array.isArray(sectionSource.questions) ? sectionSource.questions : [];
+      return {
+        sectionId: String(sectionSource.sectionId ?? '').trim(),
+        sectionTitle: String(sectionSource.sectionTitle ?? '').trim(),
+        sectionDescription: String(sectionSource.sectionDescription ?? '').trim(),
+        questions: questions.map((question) => {
+          const questionSource = question && typeof question === 'object' ? question as Record<string, unknown> : {};
+          const type = String(questionSource.type ?? 'open') as GithubQuestion['type'];
+          return {
+            id: String(questionSource.id ?? '').trim(),
+            questionText: String(questionSource.questionText ?? '').trim(),
+            type,
+            difficulty: String(questionSource.difficulty ?? 'medium') as GithubQuestion['difficulty'],
+            fileReference: String(questionSource.fileReference ?? '').trim(),
+            conceptTag: String(questionSource.conceptTag ?? '').trim(),
+            options: type === 'mcq' ? toStringArray(questionSource.options).slice(0, 4) : undefined,
+            correctAnswer: type === 'mcq' ? String(questionSource.correctAnswer ?? '').trim() : undefined,
+          };
+        }).filter((question) => question.id && question.questionText && question.fileReference && question.conceptTag),
+      };
+    }).filter((section) => section.sectionId && section.sectionTitle),
+  };
+}
+
+function resolveModelConfig(modelOverride?: string): ModelConfig {
   const compatBaseUrl = process.env.OPENAI_COMPAT_BASE_URL?.trim();
   const compatApiKey = process.env.OPENAI_API_KEY?.trim() || process.env.ANTHROPIC_API_KEY?.trim();
   if (compatBaseUrl && compatApiKey) {
@@ -243,7 +301,8 @@ function resolveModelConfig(): ModelConfig {
       provider: 'openai-compat',
       apiKey: compatApiKey,
       baseUrl: compatBaseUrl.replace(/\/$/, ''),
-      model: process.env.PREP_MODEL?.trim()
+      model: modelOverride
+        || process.env.PREP_MODEL?.trim()
         || process.env.INTERVIEW_ANALYST_MODEL?.trim()
         || process.env.WORKFLOW_SUMMARY_MODEL?.trim()
         || process.env.ANTHROPIC_MODEL?.trim()
@@ -256,20 +315,31 @@ function resolveModelConfig(): ModelConfig {
     return {
       provider: 'gemini',
       apiKey: geminiApiKey,
-      model: process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash',
+      model: modelOverride || process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash',
     };
   }
 
   throw new Error('No compatible LLM provider is configured for prep analysis.');
 }
 
-async function callStructuredModel<T>(systemPrompt: string, userPrompt: string, normalize: (payload: unknown) => T): Promise<{ result: T; provider: string; model: string }> {
-  const config = resolveModelConfig();
+async function callStructuredModel<T>(
+  systemPrompt: string,
+  userPrompt: string,
+  normalize: (payload: unknown) => T,
+  options: { maxTokens?: number; timeoutMs?: number; model?: string } = {},
+): Promise<{ result: T; provider: string; model: string }> {
+  const config = resolveModelConfig(options.model);
+  const abortController = new AbortController();
+  const timeout = options.timeoutMs
+    ? setTimeout(() => abortController.abort(new Error('analysis_timeout')), options.timeoutMs)
+    : null;
 
   let rawText = '';
-  if (config.provider === 'openai-compat') {
-    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  try {
+    if (config.provider === 'openai-compat') {
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: 'POST',
+      signal: abortController.signal,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
@@ -277,7 +347,7 @@ async function callStructuredModel<T>(systemPrompt: string, userPrompt: string, 
       body: JSON.stringify({
         model: config.model,
         temperature: 0.2,
-        max_tokens: 4000,
+        max_tokens: options.maxTokens ?? 4000,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -285,12 +355,19 @@ async function callStructuredModel<T>(systemPrompt: string, userPrompt: string, 
       }),
     });
 
-    const data = await response.json().catch(() => ({})) as {
-      error?: { message?: string };
-      choices?: Array<{ message?: { content?: unknown } }>;
-    };
+    const responseText = await response.text();
+    const data = (() => {
+      try {
+        return JSON.parse(responseText) as {
+          error?: { message?: string };
+          choices?: Array<{ message?: { content?: unknown } }>;
+        };
+      } catch {
+        return { error: { message: responseText } };
+      }
+    })();
     if (!response.ok) {
-      throw new Error(String(data.error?.message ?? 'Prep analysis request failed.'));
+      throw new Error(`model_http_${response.status}: ${String(data.error?.message ?? (responseText || 'Prep analysis request failed.'))}`);
     }
 
     rawText = readMessageText(data.choices?.[0]?.message?.content);
@@ -299,6 +376,7 @@ async function callStructuredModel<T>(systemPrompt: string, userPrompt: string, 
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.apiKey)}`,
       {
         method: 'POST',
+        signal: abortController.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemInstruction: {
@@ -308,28 +386,44 @@ async function callStructuredModel<T>(systemPrompt: string, userPrompt: string, 
           generationConfig: {
             temperature: 0.2,
             responseMimeType: 'application/json',
+            maxOutputTokens: options.maxTokens ?? 4000,
           },
         }),
       },
     );
 
-    const data = await response.json().catch(() => ({})) as {
-      error?: { message?: string };
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
+    const responseText = await response.text();
+    const data = (() => {
+      try {
+        return JSON.parse(responseText) as {
+          error?: { message?: string };
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+        };
+      } catch {
+        return { error: { message: responseText } };
+      }
+    })();
     if (!response.ok) {
-      throw new Error(String(data.error?.message ?? 'Gemini prep analysis request failed.'));
+      throw new Error(`model_http_${response.status}: ${String(data.error?.message ?? (responseText || 'Gemini prep analysis request failed.'))}`);
     }
 
     rawText = String(data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
   }
 
-  const parsed = JSON.parse(extractJsonPayload(rawText));
-  return {
-    result: normalize(parsed),
-    provider: config.provider,
-    model: config.model,
-  };
+    const parsed = JSON.parse(extractJsonPayload(rawText));
+    return {
+      result: normalize(parsed),
+      provider: config.provider,
+      model: config.model,
+    };
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      throw new Error('analysis_timeout');
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function parseGitHubRepository(input: string): { owner: string; repo: string } | null {
@@ -339,6 +433,12 @@ function parseGitHubRepository(input: string): { owner: string; repo: string } |
     owner: match[1],
     repo: match[2],
   };
+}
+
+function normalizeGithubRepoUrl(input: string): string | null {
+  const parsed = parseGitHubRepository(input);
+  if (!parsed) return null;
+  return `https://github.com/${parsed.owner}/${parsed.repo.replace(/\.git$/i, '')}`;
 }
 
 type RepoTreeItem = {
@@ -436,6 +536,137 @@ async function fetchGitHubRepositoryContext(projectInput: string): Promise<strin
     languages ? `Detected languages: ${languages}` : '',
     fileBlocks.length ? `Detected key files:\n\n${fileBlocks.join('\n\n---\n\n')}` : '',
   ].filter(Boolean).join('\n\n');
+}
+
+type GithubRepoContext = {
+  repoName: string;
+  repoUrl: string;
+  detectedStack: string[];
+  fileContents: string;
+  readmeContent: string;
+  limited: boolean;
+};
+
+async function fetchGithubRepoForQuestionSet(repoUrlInput: string): Promise<GithubRepoContext> {
+  const parsed = parseGitHubRepository(repoUrlInput);
+  if (!parsed) throw new Error('invalid_github_url');
+  const repoUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`;
+  const token = process.env.GITHUB_TOKEN?.trim();
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const rawHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const repoResponse = await fetch(repoUrl, { headers }).catch(() => null);
+  if (repoResponse?.status === 404) throw new Error('private_repo');
+  if (repoResponse?.status === 403) throw new Error('rate_limited');
+  if (!repoResponse?.ok) throw new Error('github_fetch_failed');
+  const repoData = await repoResponse.json().catch(() => ({})) as Record<string, unknown>;
+  const defaultBranch = String(repoData.default_branch ?? 'main');
+  const repoName = String(repoData.name ?? parsed.repo);
+  const languagesResponse = await fetch(`${repoUrl}/languages`, { headers }).catch(() => null);
+  const languagesData = languagesResponse?.ok ? await languagesResponse.json().catch(() => ({})) as Record<string, number> : {};
+  const treeResponse = await fetch(`${repoUrl}/git/trees/${encodeURIComponent(defaultBranch)}?recursive=1`, { headers }).catch(() => null);
+  if (treeResponse?.status === 403) throw new Error('rate_limited');
+  if (!treeResponse?.ok) throw new Error('private_repo');
+  const treeData = await treeResponse.json().catch(() => ({})) as { tree?: RepoTreeItem[] };
+  const codeExtensions = /\.(tsx?|jsx?|py|go|rs|java|cs|php|rb|sql|prisma|json|md|yml|yaml|toml|css)$/i;
+  const ignored = /(^|\/)(node_modules|dist|build|coverage|\.git|vendor|__pycache__)\//i;
+  const priorityScore = (filePath: string) => {
+    const lower = filePath.toLowerCase();
+    if (/(package\.json|requirements\.txt|pyproject\.toml|go\.mod|cargo\.toml|readme\.md)$/i.test(lower)) return 0;
+    if (/(schema|model|migration|prisma|drizzle|database|auth|middleware|jwt|oauth)/i.test(lower)) return 1;
+    if (/(route|routes|controller|api|handler|server|main|app)/i.test(lower)) return 2;
+    if (/\.(tsx|jsx|ts|js|py)$/i.test(lower)) return 3;
+    return 4;
+  };
+  const files = (treeData.tree ?? [])
+    .filter((item) => item.type === 'blob' && item.path && codeExtensions.test(item.path) && !ignored.test(item.path))
+    .sort((a, b) => {
+      const aPath = a.path ?? '';
+      const bPath = b.path ?? '';
+      return priorityScore(aPath) - priorityScore(bPath) || aPath.length - bPath.length;
+    })
+    .slice(0, 18);
+  const blocks: string[] = [];
+  let readmeContent = '';
+  let remainingBudget = Number(process.env.GITHUB_SCAN_INPUT_CHAR_BUDGET ?? 26000);
+  for (const file of files) {
+    if (!file.path || remainingBudget <= 0) break;
+    const rawUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${encodeURIComponent(defaultBranch)}/${file.path.split('/').map(encodeURIComponent).join('/')}`;
+    const rawResponse = await fetch(rawUrl, { headers: rawHeaders }).catch(() => null);
+    if (!rawResponse?.ok) continue;
+    const text = (await rawResponse.text().catch(() => '')).slice(0, Math.min(remainingBudget, 2200));
+    if (!text.trim()) continue;
+    remainingBudget -= text.length;
+    if (file.path.toLowerCase().endsWith('readme.md')) readmeContent = text;
+    blocks.push(`FILE: ${file.path}\n${text}`);
+  }
+  const stack = Array.from(new Set([
+    ...Object.keys(languagesData),
+    String(repoData.language ?? ''),
+    ...files.map((file) => {
+      const ext = path.extname(file.path ?? '').replace('.', '');
+      return ext ? ext.toUpperCase() : '';
+    }),
+  ].filter(Boolean))).slice(0, 12);
+  return {
+    repoName,
+    repoUrl: `https://github.com/${parsed.owner}/${parsed.repo}`,
+    detectedStack: stack,
+    fileContents: blocks.join('\n\n---\n\n'),
+    readmeContent,
+    limited: blocks.filter((block) => !block.startsWith('FILE: README')).length < 4,
+  };
+}
+
+const GITHUB_REPO_SCAN_PROMPT = `You are a senior software engineer with 10 years of experience conducting technical interviews at product companies. You have been given the complete file contents of a GitHub repository. Your only job is to generate interview questions that are strictly and exclusively derived from what exists in this specific codebase. You are not allowed to generate generic questions about the technologies used. Every single question must reference something that actually exists in this repo — a specific file, a specific function, a specific pattern, a specific architectural decision, or a specific piece of logic found in the code.
+
+Here is the repository content:
+
+REPO NAME: {repoName}
+
+DETECTED FILES AND CONTENTS:
+{fileContents}
+
+README:
+{readmeContent}
+
+Generate exactly 45 interview questions divided into five sections. Return only a valid JSON object. Do not return any prose, explanation, markdown, or text outside the JSON. The JSON must have this exact structure:
+
+projectName: the repository name as a string.
+
+projectSummary: a single paragraph of 3 to 4 sentences describing what this application does, what stack it uses, and what the two or three most technically interesting aspects of the codebase are. Write this as if you are briefing an interviewer who has 30 seconds to understand the project before the interview starts. Be specific — name actual libraries, actual file names, actual patterns you found.
+
+sections: an array of exactly five objects. Each object has a sectionId (string, one of project-overview, most-probable, scenario-based, coding-based, technical-deep-dive), a sectionTitle (string), a sectionDescription (one sentence describing what this section tests), and a questions array.
+
+Each question object must have: id (string, sequential like q1 through q45), questionText (the full question as a string), type (one of mcq, open, coding, scenario), difficulty (one of easy, medium, hard), fileReference (the exact file name or file path from the repo that this question is based on — this field is mandatory and must never be null or generic — if you cannot reference a specific file for a question do not include that question), conceptTag (a short string like JWT auth or useEffect cleanup or SQL indexing that names the concept being tested), and for mcq type questions only include an options array of four strings and a correctAnswer string matching one of the options.
+
+Section distribution rules you must follow without exception: project-overview must have exactly 8 questions of type open and difficulty easy to medium. most-probable must have exactly 9 questions mixing open and mcq types at medium difficulty. scenario-based must have exactly 9 questions of type scenario at medium to hard difficulty. coding-based must have exactly 10 questions of type coding at medium to hard difficulty. technical-deep-dive must have exactly 9 questions of type open at hard difficulty.
+
+Rules you must never violate: Do not generate any question that could apply to any other project. If a question could appear in a generic React interview or a generic Node interview without referencing this specific repo, discard it and write a different one. Every question must be answerable by someone who has read this codebase but might not have deep general knowledge. The fileReference field is not optional — every question must cite a file. Questions about the database must reference the actual schema or model files found. Questions about auth must reference the actual auth implementation found. Questions about components must reference the actual component files found. If the repo has no auth, generate no auth questions. If the repo has no database, generate no database questions. Only generate questions about what actually exists. Do not pad sections with filler questions. If a section cannot be genuinely filled with repo-specific questions, reduce its count and note this in a warnings field at the root of the JSON. The coding-based questions must show a partial code snippet from the actual repo in the questionText and ask the candidate to complete, fix, optimize, or explain it.`;
+
+function buildGithubQuestionPrompt(context: GithubRepoContext) {
+  return GITHUB_REPO_SCAN_PROMPT
+    .replace('{repoName}', context.repoName)
+    .replace('{fileContents}', context.fileContents || 'No meaningful code files found.')
+    .replace('{readmeContent}', context.readmeContent || 'No README found.');
+}
+
+function assertUsableGithubQuestionSet(result: GithubQuestionSet) {
+  const totalQuestions = result.sections.reduce((sum, section) => sum + section.questions.length, 0);
+  const expectedSections = new Set(['project-overview', 'most-probable', 'scenario-based', 'coding-based', 'technical-deep-dive']);
+  const returnedSections = new Set(result.sections.map((section) => section.sectionId));
+  const missingSection = [...expectedSections].find((sectionId) => !returnedSections.has(sectionId));
+  if (!result.projectName || !result.projectSummary || missingSection || totalQuestions < 35) {
+    throw new Error('model_invalid_repo_question_json');
+  }
+  const hasMissingReferences = result.sections.some((section) => (
+    section.questions.some((question) => !question.fileReference || !question.questionText)
+  ));
+  if (hasMissingReferences) {
+    throw new Error('model_missing_repo_references');
+  }
 }
 
 function parseCookies(cookieHeader?: string): Record<string, string> {
@@ -983,6 +1214,179 @@ async function createApp() {
     }
 
     response.json({ success: true });
+  });
+
+  app.get('/api/github-repos', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const repos = await db.prepare(`
+      SELECT id, repo_url, repo_name, detected_stack, scanned_at, status
+      FROM github_repos
+      WHERE user_id = ? AND status = 'complete'
+      ORDER BY scanned_at DESC
+    `).all<{ id: string; repo_url: string; repo_name: string; detected_stack: unknown; scanned_at: string; status: string }>(user.id);
+    const pendingJobs = await db.prepare(`
+      SELECT id, repo_url
+      FROM repo_scan_jobs
+      WHERE user_id = ? AND status = 'pending'
+      ORDER BY created_at DESC
+      LIMIT 3
+    `).all<{ id: string; repo_url: string }>(user.id);
+    response.json({
+      repos: repos.map((repo) => ({
+        id: repo.id,
+        repoUrl: repo.repo_url,
+        repoName: repo.repo_name,
+        detectedStack: Array.isArray(repo.detected_stack) ? repo.detected_stack : [],
+        scannedAt: repo.scanned_at,
+        status: repo.status,
+      })),
+      pendingJobs: pendingJobs.map((job) => ({
+        id: job.id,
+        repoUrl: job.repo_url,
+        repoName: parseGitHubRepository(job.repo_url)?.repo ?? job.repo_url,
+      })),
+    });
+  });
+
+  app.get('/api/github-repos/:repoId/questions', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const repoId = String(request.params.repoId ?? '');
+    const row = await db.prepare(`
+      SELECT gr.id, gr.repo_url, gr.repo_name, gr.detected_stack, gr.scanned_at, gr.status, gr.raw_analysis_json,
+             rqs.project_summary, rqs.total_questions, rqs.sections_json
+      FROM github_repos gr
+      LEFT JOIN repo_question_sets rqs ON rqs.repo_id = gr.id
+      WHERE gr.id = ? AND gr.user_id = ?
+    `).get<{
+      id: string; repo_url: string; repo_name: string; detected_stack: unknown; scanned_at: string; status: string;
+      raw_analysis_json: unknown; project_summary: string | null; total_questions: number | null; sections_json: unknown;
+    }>(repoId, user.id);
+    if (!row) {
+      response.status(404).json({ error: 'Repository scan not found.' });
+      return;
+    }
+    if (row.status !== 'complete' || !row.project_summary || !Array.isArray(row.sections_json)) {
+      response.status(409).json({ error: 'This repository analysis is not complete. Please re-scan the repo from GitHub Repos.' });
+      return;
+    }
+    response.json({
+      repo: {
+        id: row.id,
+        repoUrl: row.repo_url,
+        repoName: row.repo_name,
+        detectedStack: Array.isArray(row.detected_stack) ? row.detected_stack : [],
+        scannedAt: row.scanned_at,
+        status: row.status,
+      },
+      projectSummary: row.project_summary ?? 'Analysis is still processing.',
+      totalQuestions: row.total_questions ?? 0,
+      sections: Array.isArray(row.sections_json) ? row.sections_json : [],
+      warnings: row.raw_analysis_json && typeof row.raw_analysis_json === 'object' && Array.isArray((row.raw_analysis_json as { warnings?: unknown }).warnings)
+        ? (row.raw_analysis_json as { warnings: string[] }).warnings
+        : [],
+    });
+  });
+
+  app.post('/api/github-repos/scan', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const repoUrl = normalizeGithubRepoUrl(String(request.body?.repoUrl ?? '').trim());
+    const force = Boolean(request.body?.force);
+    if (!repoUrl) {
+      response.status(400).json({ status: 'failed', message: 'Please paste a valid GitHub repository URL.' });
+      return;
+    }
+    const existing = await db.prepare('SELECT id, repo_name, status FROM github_repos WHERE user_id = ? AND repo_url = ?')
+      .get<{ id: string; repo_name: string; status: string }>(user.id, repoUrl);
+    if (existing?.status === 'complete' && !force) {
+      response.status(409).json({ status: 'duplicate', repoId: existing.id, repoName: existing.repo_name });
+      return;
+    }
+    const pendingJob = await db.prepare(`
+      SELECT id
+      FROM repo_scan_jobs
+      WHERE user_id = ? AND repo_url = ? AND status = 'pending' AND created_at > NOW() - INTERVAL '5 minutes'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get<{ id: string }>(user.id, repoUrl);
+    if (pendingJob && !force) {
+      response.status(202).json({
+        status: 'pending',
+        message: 'This repository scan is already running. Please wait for it to finish before starting another scan.',
+      });
+      return;
+    }
+
+    const jobId = crypto.randomUUID();
+    await db.prepare('INSERT INTO repo_scan_jobs (id, user_id, repo_url, status, created_at, retry_count) VALUES (?, ?, ?, ?, NOW(), 0)')
+      .run(jobId, user.id, repoUrl, 'pending');
+
+    const fail = async (status: string, message: string, httpStatus = 502) => {
+      await db.prepare('UPDATE repo_scan_jobs SET status = ?, completed_at = NOW(), error_message = ? WHERE id = ?').run(status, message, jobId);
+      response.status(httpStatus).json({ status, message });
+    };
+
+    try {
+      const context = await fetchGithubRepoForQuestionSet(repoUrl);
+      const repoId = existing?.id ?? crypto.randomUUID();
+      const analysis = await callStructuredModel<GithubQuestionSet>(
+        'Return only valid JSON.',
+        buildGithubQuestionPrompt(context),
+        normalizeGithubQuestionSet,
+        {
+          model: process.env.GITHUB_SCAN_MODEL?.trim() || 'google/gemini-2.0-flash-001',
+          maxTokens: Number(process.env.GITHUB_SCAN_MAX_TOKENS ?? 9000),
+          timeoutMs: Number(process.env.GITHUB_SCAN_TIMEOUT_MS ?? 120000),
+        },
+      );
+      const result = analysis.result;
+      if (context.limited) {
+        result.warnings = Array.from(new Set([...(result.warnings ?? []), 'limited_code_files']));
+      }
+      const totalQuestions = result.sections.reduce((sum, section) => sum + section.questions.length, 0);
+      assertUsableGithubQuestionSet(result);
+      if (existing?.id) {
+        await db.prepare('UPDATE github_repos SET repo_name = ?, detected_stack = ?::jsonb, scanned_at = NOW(), status = ?, raw_analysis_json = ?::jsonb, updated_at = NOW() WHERE id = ?')
+          .run(result.projectName || context.repoName, JSON.stringify(context.detectedStack), 'complete', JSON.stringify(result), repoId);
+      } else {
+        await db.prepare('INSERT INTO github_repos (id, user_id, repo_url, repo_name, detected_stack, scanned_at, status, raw_analysis_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?::jsonb, NOW(), ?, ?::jsonb, NOW(), NOW())')
+          .run(repoId, user.id, context.repoUrl, result.projectName || context.repoName, JSON.stringify(context.detectedStack), 'complete', JSON.stringify(result));
+      }
+      await db.prepare('DELETE FROM repo_question_sets WHERE repo_id = ?').run(repoId);
+      await db.prepare('INSERT INTO repo_question_sets (id, repo_id, generated_at, project_summary, total_questions, sections_json) VALUES (?, ?, NOW(), ?, ?, ?::jsonb)')
+        .run(crypto.randomUUID(), repoId, result.projectSummary, totalQuestions, JSON.stringify(result.sections));
+      await db.prepare('UPDATE repo_scan_jobs SET status = ?, completed_at = NOW(), error_message = NULL WHERE id = ?').run('complete', jobId);
+      response.json({ status: 'complete', repoId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'scan_failed';
+      if (message === 'private_repo') {
+        await fail('private', 'This repository is private. Please make sure it is public or connect your GitHub account.', 403);
+        return;
+      }
+      if (message === 'rate_limited') {
+        console.error('GitHub rate limit reached while scanning repo', { userId: user.id, repoUrl });
+        await fail('rate_limited', 'GitHub rate limit reached. Please try again in a few minutes.', 429);
+        return;
+      }
+      if (message === 'analysis_timeout') {
+        await db.prepare('UPDATE repo_scan_jobs SET status = ?, completed_at = NOW(), error_message = ?, retry_count = retry_count + 1 WHERE id = ?')
+          .run('failed', 'Analysis is taking longer than expected. Please try again with a smaller public repo.', jobId);
+        response.status(202).json({ status: 'timeout', message: 'Analysis is taking longer than expected. We will notify you when it is ready.' });
+        return;
+      }
+      if (/model_http_402|budget exceeded|payment required/i.test(message)) {
+        await fail('failed', 'The AI provider rejected this DeepSeek request because the API key budget is unavailable. Please check the new key and try again.', 402);
+        return;
+      }
+      if (/model_http_4\d\d/i.test(message)) {
+        await fail('failed', `The AI provider rejected the repo scan model request: ${message.replace(/^model_http_\d+:\s*/, '')}`, 502);
+        return;
+      }
+      if (message === 'model_invalid_repo_question_json' || message === 'model_missing_repo_references') {
+        await fail('failed', 'The model response was not a complete repo-specific question set. No questions were saved and no fallback was used. Please try again.', 502);
+        return;
+      }
+      await fail('failed', 'Unable to analyze this repository right now.');
+    }
   });
 
   app.post('/api/prep/plan', requireUser, async (request, response) => {

@@ -20,8 +20,9 @@ const pool = new Pool({
     rejectUnauthorized: false,
   },
   max: 10,
+  keepAlive: true,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  connectionTimeoutMillis: Number(process.env.PG_CONNECTION_TIMEOUT_MS ?? 30000),
 });
 
 pool.on('error', (error) => {

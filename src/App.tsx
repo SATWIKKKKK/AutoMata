@@ -18,6 +18,8 @@ import WorkflowDetail from './views/WorkflowDetail';
 import Settings from './views/Settings';
 import QuestionBank from './views/QuestionBank';
 import ResultsPage from './views/ResultsPage';
+import GithubRepos from './views/GithubRepos';
+import GithubProjectQuestions from './views/GithubProjectQuestions';
 import { Privacy, SecurityPage, Terms } from './views/Legal';
 import { fetchCurrentUser, getStoredUser, persistSessionUser, SessionUser } from './lib/session';
 import { isOnboardingComplete } from './lib/prep';
@@ -243,6 +245,8 @@ function AppShell() {
             <Route path="/gap-review" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Analytics /></ProtectedRoute>} />
             <Route path="/analytics" element={<Navigate to="/gap-review" replace />} />
             <Route path="/question-bank" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><QuestionBank /></ProtectedRoute>} />
+            <Route path="/github-repos" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><GithubRepos /></ProtectedRoute>} />
+            <Route path="/github-project-qs/:repoId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><GithubProjectQuestions /></ProtectedRoute>} />
             <Route path="/templates" element={<Navigate to="/question-bank" replace />} />
             <Route path="/pulse" element={<Navigate to="/results/practice-tracks" replace />} />
             <Route path="/results" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><ResultsPage /></ProtectedRoute>} />
