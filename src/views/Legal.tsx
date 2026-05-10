@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Heart, Mail } from 'lucide-react';
 import { View } from '../App';
 
 interface LegalProps {
@@ -13,7 +13,7 @@ function LegalShell({ title, lastUpdated, children, onViewChange }: { title: str
       <div className="fixed inset-0 blueprint-grid opacity-20 pointer-events-none" />
       <nav className="sticky top-0 z-50 border-b border-blueprint-line bg-white/80 backdrop-blur-md">
         <div className="max-w-[1440px] mx-auto flex items-center justify-between px-4 md:px-8 h-16">
-          <button onClick={() => onViewChange('dashboard')} className="font-serif text-2xl text-primary">Promptly</button>
+          <button onClick={() => onViewChange('dashboard')} className="font-serif text-2xl text-primary">Repoid</button>
           <button onClick={() => onViewChange('dashboard')} className="flex items-center gap-2 text-sm text-blueprint-muted hover:text-primary transition-colors">
             <ArrowLeft size={16} /> Back
           </button>
@@ -30,11 +30,17 @@ function LegalShell({ title, lastUpdated, children, onViewChange }: { title: str
           </div>
         </motion.div>
       </main>
-      <footer className="border-t border-blueprint-line py-8 px-8 bg-white relative z-10 mt-16">
-        <div className="max-w-[1440px] mx-auto flex flex-wrap gap-6 justify-center text-xs text-blueprint-muted font-mono">
-          {(['privacy', 'terms', 'security'] as View[]).map(v => (
+      <footer className="border-t border-blueprint-line py-8 px-8 bg-white relative z-10 mt-16 dark:bg-[#1c1c1c]">
+        <div className="max-w-[1440px] mx-auto flex flex-col items-center gap-4 text-xs text-blueprint-muted font-mono">
+          <div className="flex flex-wrap gap-6 justify-center">
+          {(['privacy', 'terms', 'security', 'contact'] as View[]).map(v => (
             <button key={v} onClick={() => onViewChange(v)} className="hover:text-primary transition-colors uppercase">{v}</button>
           ))}
+          </div>
+          <p className="flex items-center gap-2">
+            2026 Repoid. All rights reserved. Made by Satwik
+            <Heart size={14} className="fill-[#6b4a2f] text-[#6b4a2f] dark:fill-white dark:text-white" />
+          </p>
         </div>
       </footer>
     </div>
@@ -102,6 +108,20 @@ export function Terms({ onViewChange }: LegalProps) {
       <section>
         <h2 className="text-xl font-semibold text-primary mb-3">7. Contact</h2>
         <p>For legal inquiries: <span className="font-mono text-primary">legal@automata.ai</span></p>
+      </section>
+    </LegalShell>
+  );
+}
+
+export function Contact({ onViewChange }: LegalProps) {
+  return (
+    <LegalShell title="Contact Us" lastUpdated="May 10, 2026" onViewChange={onViewChange}>
+      <section>
+        <h2 className="text-xl font-semibold text-primary mb-3">Reach Repoid</h2>
+        <p>For questions, support, feedback, or collaboration, contact Satwik directly.</p>
+        <a href="mailto:satwikchandra65@gmail.com" className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-ui-label text-white no-underline transition-colors hover:bg-[#303031]">
+          <Mail size={16} /> Email satwikchandra65@gmail.com
+        </a>
       </section>
     </LegalShell>
   );

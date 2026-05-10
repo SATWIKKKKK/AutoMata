@@ -186,15 +186,12 @@ export default function Workflows() {
         </section>
 
         <section className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-4 sm:gap-5 lg:gap-6">
-          {tracks.map((track, index) => {
-            const isFeaturedTrack = index === 0 && tracks.length > 1;
-
-            return (
-            <article key={track.id} className={`surface-card flex h-full flex-col ${isFeaturedTrack ? 'lg:col-span-2 xl:col-span-2' : ''}`}>
+          {tracks.map((track) => (
+            <article key={track.id} className="surface-card flex h-full flex-col">
               <div className="flex h-full flex-col">
                 <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
-                    <h2 className="wrap-anywhere text-headline-lg text-primary">{track.name}</h2>
+                    <h2 className="wrap-anywhere text-headline-md text-primary not-italic">{track.name}</h2>
                   </div>
                   <span className="inline-flex w-fit shrink-0 rounded-full bg-[#efeded] px-4 py-2 text-ui-label text-blueprint-muted">{track.duration}</span>
                 </div>
@@ -227,12 +224,12 @@ export default function Workflows() {
               <button
                 type="button"
                 onClick={() => navigate(track.route)}
-                className={`mt-6 w-full rounded-full border px-5 py-3 text-ui-label transition-colors ${isFeaturedTrack ? 'border-primary bg-primary text-white hover:bg-[#303031]' : 'border-blueprint-line bg-[#efeded] text-primary hover:bg-primary hover:text-white'}`}
+                className="mt-6 w-full rounded-full border border-primary bg-primary px-5 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]"
               >
                 Open Round
               </button>
             </article>
-          )})}
+          ))}
 
           <button type="button" onClick={() => navigate('/onboarding')} className="flex min-h-64 flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-blueprint-line bg-transparent p-6 text-center transition-colors hover:bg-white/50 sm:min-h-72 lg:min-h-80">
             <div className="flex h-16 w-16 items-center justify-center text-[#2d63b8]">

@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, X } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { GithubScanOverlay } from '../components/GithubRepoScanner';
-import { GithubRepo, isValidGithubRepoUrl, listGithubRepos } from '../lib/githubRepos';
+import { deleteGithubRepo, GithubRepo, isValidGithubRepoUrl, listGithubRepos, normalizeGithubRepoInput } from '../lib/githubRepos';
 
 export default function GithubRepos() {
   const [repos, setRepos] = useState<GithubRepo[]>([]);
@@ -10,11 +10,15 @@ export default function GithubRepos() {
   const [repoUrl, setRepoUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<GithubRepo | null>(null);
-  const [scanningUrl, setScanningUrl] = useState<string | null>(null);
-  const [forceScan, setForceScan] = useState(false);
+  const [scanRequest, setScanRequest] = useState<{ repoUrl: string; force: boolean; nonce: number } | null>(null);
+  const [deletingRepoId, setDeletingRepoId] = useState<string | null>(null);
+
+  const refreshRepos = () => {
+    void listGithubRepos().then((data) => setRepos(data.repos)).catch((err) => setError(err instanceof Error ? err.message : 'Unable to load repos.'));
+  };
 
   useEffect(() => {
-    void listGithubRepos().then((data) => setRepos(data.repos)).catch((err) => setError(err instanceof Error ? err.message : 'Unable to load repos.'));
+    refreshRepos();
   }, []);
 
   const submit = (force = false) => {
@@ -25,14 +29,34 @@ export default function GithubRepos() {
       setError('Please paste a valid GitHub repository URL.');
       return;
     }
-    const existing = repos.find((repo) => repo.repoUrl.toLowerCase().replace(/\.git$/i, '') === trimmed.toLowerCase().replace(/\.git$/i, ''));
+    const existing = repos.find((repo) => normalizeGithubRepoInput(repo.repoUrl).toLowerCase() === normalizeGithubRepoInput(trimmed).toLowerCase());
     if (existing && !force) {
       setDuplicate(existing);
       return;
     }
-    setForceScan(force);
     setModalOpen(false);
-    setScanningUrl(trimmed);
+    setScanRequest({ repoUrl: trimmed, force, nonce: Date.now() });
+  };
+
+  const rescanRepo = (repo: GithubRepo) => {
+    setError(null);
+    setRepoUrl(repo.repoUrl);
+    setScanRequest({ repoUrl: repo.repoUrl, force: true, nonce: Date.now() });
+  };
+
+  const removeRepo = async (repo: GithubRepo) => {
+    const confirmed = window.confirm(`Delete the saved scan for ${repo.repoName}? This removes its generated questions.`);
+    if (!confirmed) return;
+    setDeletingRepoId(repo.id);
+    setError(null);
+    try {
+      await deleteGithubRepo(repo.id);
+      setRepos((current) => current.filter((item) => item.id !== repo.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to delete this repository scan.');
+    } finally {
+      setDeletingRepoId(null);
+    }
   };
 
   return (
@@ -61,9 +85,17 @@ export default function GithubRepos() {
                   <span key={item} className="rounded-full border border-blueprint-line bg-[#f5f3f3] px-3 py-1 text-ui-label text-blueprint-muted">{item}</span>
                 ))}
               </div>
-              <Link to={`/github-project-qs/${repo.id}`} className="mt-6 inline-flex rounded-full bg-primary px-5 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">
-                View Questions
-              </Link>
+              <div className="mt-6 grid gap-2 sm:grid-cols-2">
+                <Link to={`/github-project-qs/${repo.id}`} className="inline-flex justify-center rounded-full bg-primary px-5 py-3 text-ui-label text-white transition-colors hover:bg-[#303031] sm:col-span-2">
+                  View Questions
+                </Link>
+                <button type="button" onClick={() => rescanRepo(repo)} className="inline-flex items-center justify-center gap-2 rounded-full border border-blueprint-line bg-white px-4 py-3 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
+                  <RefreshCw size={14} /> Re-scan
+                </button>
+                <button type="button" disabled={deletingRepoId === repo.id} onClick={() => void removeRepo(repo)} className="inline-flex items-center justify-center gap-2 rounded-full border border-red-100 bg-red-50 px-4 py-3 text-ui-label text-red-700 transition-colors hover:bg-red-100 disabled:opacity-60">
+                  <Trash2 size={14} /> Delete
+                </button>
+              </div>
             </article>
           ))}
         </section>
@@ -73,15 +105,22 @@ export default function GithubRepos() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
           <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-white p-6 shadow-2xl">
             <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-headline-sm text-primary">Add GitHub Repo</h2>
+              <h2 className="text-headline-sm text-primary">Scan a new repository</h2>
               <button type="button" onClick={() => setModalOpen(false)} aria-label="Close" className="text-blueprint-muted hover:text-primary"><X size={18} /></button>
             </div>
-            <input value={repoUrl} onChange={(event) => setRepoUrl(event.target.value)} placeholder="Paste your GitHub repo URL" className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none focus:border-primary" />
+            <input value={repoUrl} onChange={(event) => { setRepoUrl(event.target.value); setError(null); setDuplicate(null); }} placeholder="Paste your GitHub repo URL" className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none focus:border-primary" />
             {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
             {duplicate ? (
               <div className="mt-4 rounded-lg bg-[#f5f3f3] p-4 text-body-md text-primary">
-                You have already scanned this repo. <Link className="underline underline-offset-4" to={`/github-project-qs/${duplicate.id}`}>View existing questions?</Link>
-                <button type="button" onClick={() => submit(true)} className="mt-3 block text-ui-label text-primary underline underline-offset-4">Re-scan</button>
+                <p>You have already scanned this repository.</p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Link className="rounded-full bg-primary px-4 py-2 text-ui-label text-white transition-colors hover:bg-[#303031]" to={`/github-project-qs/${duplicate.id}`}>
+                    View Existing Questions
+                  </Link>
+                  <button type="button" onClick={() => submit(true)} className="rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#fbfafa]">
+                    Re-scan
+                  </button>
+                </div>
               </div>
             ) : null}
             <button type="button" onClick={() => submit()} className="mt-6 w-full rounded-full bg-primary px-5 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">Submit</button>
@@ -89,7 +128,16 @@ export default function GithubRepos() {
         </div>
       ) : null}
 
-      {scanningUrl ? <GithubScanOverlay repoUrl={scanningUrl} force={forceScan} onClose={() => setScanningUrl(null)} onError={setError} /> : null}
+      {scanRequest ? (
+        <GithubScanOverlay
+          key={scanRequest.nonce}
+          repoUrl={scanRequest.repoUrl}
+          force={scanRequest.force}
+          onClose={() => setScanRequest(null)}
+          onError={setError}
+          onComplete={refreshRepos}
+        />
+      ) : null}
     </div>
   );
 }

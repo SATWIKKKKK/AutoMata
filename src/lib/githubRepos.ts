@@ -6,11 +6,11 @@ export type RepoQuestion = {
   fileReference: string;
   conceptTag: string;
   options?: string[];
-  correctAnswer?: string;
+  correctAnswer: string;
 };
 
 export type RepoQuestionSection = {
-  sectionId: 'project-overview' | 'most-probable' | 'scenario-based' | 'coding-based' | 'technical-deep-dive';
+  sectionId: string;
   sectionTitle: string;
   sectionDescription: string;
   questions: RepoQuestion[];
@@ -29,8 +29,20 @@ export type RepoQuestionSet = {
   repo: GithubRepo;
   projectSummary: string;
   totalQuestions: number;
+  detectedDomains?: string[];
   sections: RepoQuestionSection[];
   warnings?: string[];
+};
+
+export type GithubScanJob = {
+  id: string;
+  repoUrl: string;
+  repoName: string;
+  repoId?: string;
+  status: 'pending' | 'complete' | 'failed';
+  message?: string | null;
+  createdAt?: string;
+  completedAt?: string | null;
 };
 
 export const GITHUB_SCAN_LINES = [
@@ -48,7 +60,11 @@ export const GITHUB_SCAN_LINES = [
 ];
 
 export function isValidGithubRepoUrl(value: string) {
-  return /^https:\/\/github\.com\/[^/\s]+\/[^/\s#?]+\/?$/i.test(value.trim().replace(/\.git$/i, ''));
+  return /^https?:\/\/(?:www\.)?github\.com\/[^/\s]+\/[^/\s#?]+\/?$/i.test(value.trim().replace(/\.git$/i, ''));
+}
+
+export function normalizeGithubRepoInput(value: string) {
+  return value.trim().replace(/^http:\/\//i, 'https://').replace(/^https:\/\/www\./i, 'https://').replace(/\.git$/i, '').replace(/\/$/, '');
 }
 
 async function readJson<T>(response: Response): Promise<T & { error?: string }> {
@@ -69,10 +85,26 @@ export async function getGithubQuestionSet(repoId: string): Promise<RepoQuestion
   return data;
 }
 
+export async function getGithubScanJob(jobId: string): Promise<GithubScanJob> {
+  const response = await fetch(`/api/github-repos/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include' });
+  const data = await readJson<GithubScanJob>(response);
+  if (!response.ok) throw new Error(data.error ?? 'Unable to load scan job.');
+  return data;
+}
+
+export async function deleteGithubRepo(repoId: string): Promise<void> {
+  const response = await fetch(`/api/github-repos/${encodeURIComponent(repoId)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  const data = await readJson<{ success?: boolean }>(response);
+  if (!response.ok || !data.success) throw new Error(data.error ?? 'Unable to delete this repository scan.');
+}
+
 export async function scanGithubRepo(repoUrl: string, force = false): Promise<
-  | { status: 'complete'; repoId: string }
+  | { status: 'complete'; repoId: string; jobId?: string }
   | { status: 'duplicate'; repoId: string; repoName: string }
-  | { status: 'private' | 'rate_limited' | 'timeout' | 'pending' | 'failed'; message: string }
+  | { status: 'private' | 'rate_limited' | 'timeout' | 'pending' | 'failed'; message: string; jobId?: string }
 > {
   const response = await fetch('/api/github-repos/scan', {
     method: 'POST',
@@ -80,11 +112,12 @@ export async function scanGithubRepo(repoUrl: string, force = false): Promise<
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repoUrl, force }),
   });
-  const data = await readJson<{ status?: string; repoId?: string; repoName?: string; message?: string }>(response);
-  if (data.status === 'complete' && data.repoId) return { status: 'complete', repoId: data.repoId };
+  const data = await readJson<{ status?: string; repoId?: string; repoName?: string; message?: string; jobId?: string }>(response);
+  if (data.status === 'complete' && data.repoId) return { status: 'complete', repoId: data.repoId, jobId: data.jobId };
   if (data.status === 'duplicate' && data.repoId) return { status: 'duplicate', repoId: data.repoId, repoName: data.repoName ?? 'this repo' };
   return {
     status: (data.status as 'private' | 'rate_limited' | 'timeout' | 'pending' | 'failed') ?? 'failed',
     message: data.message ?? data.error ?? 'Unable to scan this repository.',
+    jobId: data.jobId,
   };
 }

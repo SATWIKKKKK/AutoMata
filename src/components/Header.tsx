@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Bell, ChevronDown, Menu, Settings as SettingsIcon, LogOut } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { ChevronDown, Menu, Settings as SettingsIcon, LogOut } from 'lucide-react';
 import { clearSessionState, getStoredUser } from '../lib/session';
 import { View } from '../App';
 import { cn } from '../lib/utils';
+import { DOMAIN_LABELS, getStoredPrepWorkspace } from '../lib/prep';
 
 interface HeaderProps {
   view: View;
@@ -19,10 +19,10 @@ function getInitials(name?: string, email?: string) {
 }
 
 export default function Header({ view, title, onViewChange, onMenuToggle }: HeaderProps) {
-  const navigate = useNavigate();
   const user = getStoredUser();
+  const workspace = getStoredPrepWorkspace();
+  const roleLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend';
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [query, setQuery] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -48,16 +48,6 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
         <button type="button" onClick={onMenuToggle} className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:text-primary md:hidden">
           <Menu size={16} />
         </button>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            navigate(`/question-bank?search=${encodeURIComponent(query.trim())}`);
-          }}
-          className="hidden items-center gap-2 rounded-full border border-blueprint-line bg-[#f5f3f3] px-4 py-2 md:flex"
-        >
-          <span className="material-symbols-outlined text-[18px] text-blueprint-muted">search</span>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search a topic, round, or project" className="w-56 bg-transparent text-sm text-primary outline-none placeholder:text-blueprint-muted" />
-        </form>
       </div>
 
       <div className="min-w-0 flex-1 text-center">
@@ -65,14 +55,6 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
       </div>
 
       <div className="flex items-center gap-3">
-        <button type="button" className="hidden text-blueprint-muted transition-colors hover:text-primary sm:inline-flex">
-          <Bell size={18} />
-        </button>
-        <button type="button" onClick={() => onViewChange?.('settings')} className="hidden text-blueprint-muted transition-colors hover:text-primary sm:inline-flex">
-          <SettingsIcon size={18} />
-        </button>
-        <span className="hidden rounded-full bg-primary px-4 py-2 text-ui-label text-white sm:inline-flex">Prep Session</span>
-
         <div className="relative" ref={dropdownRef}>
           <button type="button" onClick={() => setDropdownOpen((open) => !open)} className="flex items-center gap-1.5">
             <div className="flex h-9 w-9 items-center justify-center rounded-full border border-blueprint-line bg-primary text-sm font-semibold text-white">
@@ -84,7 +66,8 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
           {dropdownOpen ? (
             <div className="absolute right-0 top-12 min-w-[180px] rounded-xl border border-blueprint-line bg-white py-2 shadow-xl">
               {user?.name ? <p className="px-4 py-1 text-sm font-semibold text-primary">{user.name}</p> : null}
-              {user?.email ? <p className="border-b border-blueprint-line px-4 pb-2 text-xs text-blueprint-muted">{user.email}</p> : null}
+              {user?.email ? <p className="px-4 pb-1 text-xs text-blueprint-muted">{user.email}</p> : null}
+              <p className="border-b border-blueprint-line px-4 pb-2 text-xs font-medium text-primary">{roleLabel}</p>
               <button type="button" onClick={() => { setDropdownOpen(false); onViewChange?.('settings'); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-sm text-primary transition-colors hover:bg-[#f5f3f3]">
                 <SettingsIcon size={14} className="text-blueprint-muted" /> Settings
               </button>

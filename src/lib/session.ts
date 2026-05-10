@@ -33,7 +33,17 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<{ ok: t
   }
 }
 
-export async function registerLocalAccount(payload: { email: string; name: string; password: string }): Promise<AuthResult> {
+export async function requestEmailOtp(payload: { email: string; purpose: 'signup' | 'email_change' }): Promise<{ ok: true; message: string; debugOtp?: string } | { ok: false; error: string }> {
+  const result = await requestJson<{ message: string; debugOtp?: string }>('/api/auth/request-email-otp', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, message: result.data.message, debugOtp: result.data.debugOtp };
+}
+
+export async function registerLocalAccount(payload: { email: string; name: string; password: string; otp: string; domain?: string }): Promise<AuthResult> {
   const result = await requestJson<{ user: SessionUser }>('/api/auth/signup', {
     method: 'POST',
     body: JSON.stringify(payload),

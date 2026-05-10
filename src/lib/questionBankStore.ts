@@ -86,6 +86,13 @@ export type StoredRoundAttempt = {
 
 const questionSliceSeedPromises = new Map<string, Promise<void>>();
 
+type AiEvaluation = {
+  score?: number;
+  isCorrect?: boolean;
+  observations?: string[];
+  explanation?: string;
+};
+
 function matchesSeedFilters(question: BankQuestion, filters: {
   domain?: string;
   type?: QuestionType | 'all';
@@ -433,6 +440,122 @@ function evaluateCodingAnswer(question: BankQuestion, answer: RoundAttemptAnswer
   };
 }
 
+function evaluateSubjectiveAnswer(question: BankQuestion, answer: RoundAttemptAnswerInput | undefined): RoundAttemptDetail {
+  const submittedAnswer = String(answer?.selectedAnswer ?? answer?.notes ?? '').trim();
+  if (!submittedAnswer) {
+    return {
+      questionId: question.id,
+      topic: question.topic,
+      prompt: question.questionText,
+      submittedAnswer: null,
+      correctAnswer: question.correctAnswer,
+      explanation: question.explanation,
+      isCorrect: false,
+      score: 0,
+      observations: ['No answer was submitted for this prompt.'],
+    };
+  }
+
+  const observations: string[] = ['A written or spoken response was captured for review.'];
+  let score = 25;
+  if (submittedAnswer.length >= 180) {
+    score += 20;
+    observations.push('The response has enough depth to evaluate structure and reasoning.');
+  } else {
+    observations.push('The response is short; add more implementation detail next time.');
+  }
+  if (/tradeoff|trade-off|because|therefore|however|risk|cost/i.test(submittedAnswer)) {
+    score += 15;
+    observations.push('Mentions reasoning or tradeoffs instead of only naming a tool.');
+  }
+  if (/test|verify|metric|measure|monitor|log|trace/i.test(submittedAnswer)) {
+    score += 15;
+    observations.push('Includes a verification or measurement plan.');
+  }
+  if (/failure|edge|fallback|rollback|retry|error|race|security|latency/i.test(submittedAnswer)) {
+    score += 15;
+    observations.push('Covers a production failure mode or edge case.');
+  }
+  if (question.correctAnswer.split(/\s+/).some((word) => word.length > 6 && submittedAnswer.toLowerCase().includes(word.toLowerCase()))) {
+    score += 10;
+    observations.push('Overlaps with the stored answer key for this topic.');
+  }
+
+  const boundedScore = Math.min(100, score);
+  return {
+    questionId: question.id,
+    topic: question.topic,
+    prompt: question.questionText,
+    submittedAnswer,
+    correctAnswer: question.correctAnswer,
+    explanation: question.explanation,
+    isCorrect: boundedScore >= 70,
+    score: boundedScore,
+    observations,
+  };
+}
+
+async function evaluateWithDeepSeek(question: BankQuestion, answer: RoundAttemptAnswerInput | undefined, fallback: RoundAttemptDetail): Promise<RoundAttemptDetail> {
+  const apiKey = process.env.AICREDITS_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim();
+  const baseUrl = (process.env.AICREDITS_BASE_URL?.trim() || process.env.OPENAI_COMPAT_BASE_URL?.trim() || 'https://api.aicredits.in/v1').replace(/\/$/, '');
+  const model = process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat';
+  const submittedAnswer = String(answer?.codeAnswer ?? answer?.selectedAnswer ?? answer?.notes ?? '').trim();
+  if (!apiKey || !submittedAnswer || !['coding', 'mock', 'scenario', 'system_design'].includes(question.type)) return fallback;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(process.env.CODE_EVALUATION_TIMEOUT_MS ?? 20000));
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        max_tokens: Number(process.env.CODE_EVALUATION_MAX_TOKENS ?? 900),
+        messages: [
+          {
+            role: 'system',
+            content: 'Evaluate interview practice answers. Return only JSON with score number 0-100, isCorrect boolean, observations string array, and explanation string. Be strict, practical, and domain-specific.',
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              domain: question.domainLabel,
+              type: question.type,
+              topic: question.topic,
+              prompt: question.questionText,
+              expectedAnswer: question.correctAnswer,
+              submittedAnswer,
+              fallbackObservations: fallback.observations,
+            }),
+          },
+        ],
+      }),
+    });
+    const data = await response.json().catch(() => ({})) as { choices?: Array<{ message?: { content?: string } }> };
+    if (!response.ok) return fallback;
+    const raw = String(data.choices?.[0]?.message?.content ?? '').trim();
+    const jsonText = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    const parsed = JSON.parse(jsonText) as AiEvaluation;
+    const score = Math.max(0, Math.min(100, Math.round(Number(parsed.score ?? fallback.score))));
+    return {
+      ...fallback,
+      score,
+      isCorrect: typeof parsed.isCorrect === 'boolean' ? parsed.isCorrect : score >= 70,
+      explanation: parsed.explanation || fallback.explanation,
+      observations: Array.isArray(parsed.observations) && parsed.observations.length ? parsed.observations.map(String).slice(0, 5) : fallback.observations,
+    };
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function buildAttemptRecord(row: DbRoundAttemptRow, questions: BankQuestion[]): StoredRoundAttempt {
   const answerPayload = asObject<{ answers?: RoundAttemptAnswerInput[] }>(row.answer_payload, {});
   const resultPayload = asObject<{
@@ -624,11 +747,15 @@ export async function submitRoundAttempt(params: {
 
   const questions = await getQuestionsByIds(asStringArray(row.question_ids));
   const answersById = new Map(params.answers.map((answer) => [answer.questionId, answer]));
-  const results = questions.map((question) => (
-    question.type === 'coding'
-      ? evaluateCodingAnswer(question, answersById.get(question.id))
-      : evaluateObjectiveAnswer(question, answersById.get(question.id))
-  ));
+  const results = await Promise.all(questions.map(async (question) => {
+    const answer = answersById.get(question.id);
+    const fallback = question.type === 'coding'
+      ? evaluateCodingAnswer(question, answer)
+      : question.type === 'mock' || question.type === 'system_design'
+        ? evaluateSubjectiveAnswer(question, answer)
+        : evaluateObjectiveAnswer(question, answer);
+    return evaluateWithDeepSeek(question, answer, fallback);
+  }));
 
   const correctAnswers = results.filter((result) => result.isCorrect).length;
   const score = results.length ? Math.round(results.reduce((sum, result) => sum + result.score, 0) / results.length) : 0;
@@ -639,6 +766,12 @@ export async function submitRoundAttempt(params: {
       'Explain the control flow before you type on the next attempt.',
       'Use the question bank to drill one adjacent coding topic before repeating this round.',
     ]
+    : row.question_type === 'mock'
+      ? [
+        'Repeat the answer with a clearer problem, decision, tradeoff, result, and validation structure.',
+        'Add one measurable signal or test you would use to prove the fix works.',
+        'Use the question bank to rehearse one adjacent project follow-up before the next mock.',
+      ]
     : [
       'Review the scenario prompts you missed and state the failure mode first.',
       'Drill one adjacent scenario topic from the question bank before the next timed attempt.',
@@ -646,6 +779,8 @@ export async function submitRoundAttempt(params: {
     ];
   const summary = row.question_type === 'coding'
     ? `Coding attempt scored ${score} based on the submitted draft and structural checks.`
+    : row.question_type === 'mock'
+      ? `Mock interview scored ${score} based on answer depth, tradeoffs, validation, and production awareness.`
     : `Completed ${results.length} scenario questions with a score of ${score}.`;
   const normalizedAnswers = questions.map((question) => answersById.get(question.id) ?? { questionId: question.id });
 
@@ -725,14 +860,16 @@ export async function getRoundAttemptById(userId: string, attemptId: string) {
   return buildAttemptRecord(row, questions);
 }
 
-export async function getLatestRoundAttempt(userId: string, roundType: string) {
+export async function getLatestRoundAttempt(userId: string, roundType: string, domain?: string) {
+  const params = domain ? [userId, roundType, domain] : [userId, roundType];
+  const domainClause = domain ? 'AND domain = $3' : '';
   const row = await db.queryOne<DbRoundAttemptRow>(
     `SELECT id, round_type, question_type, domain, status, duration_minutes, question_ids, answer_payload, result_payload, total_questions, correct_answers, score, time_spent_seconds, started_at, submitted_at, expires_at
        FROM round_attempts
-      WHERE user_id = $1 AND round_type = $2
+      WHERE user_id = $1 AND round_type = $2 ${domainClause}
       ORDER BY COALESCE(submitted_at, started_at) DESC, started_at DESC
       LIMIT 1`,
-    [userId, roundType],
+    params,
   );
   if (!row) return null;
   const questions = await getQuestionsByIds(asStringArray(row.question_ids));

@@ -17,11 +17,7 @@ function PlaceholderSurface({
     <div className={`rounded-xl border p-6 shadow-[0_8px_30px_rgba(0,0,0,0.04)] ${isDark ? 'border-[#333333] bg-[#141414] text-white' : 'border-blueprint-line bg-white/80'} ${className}`}>
       <div className="mb-4 flex items-center justify-between gap-4">
         <div>
-          <p className={`text-ui-label ${isDark ? 'text-[#888888]' : 'text-blueprint-muted'}`}>Coming Next</p>
           <h3 className={`mt-2 text-headline-md not-italic ${isDark ? 'text-white' : 'text-primary'}`}>{title}</h3>
-        </div>
-        <div className={`rounded-full border px-4 py-2 text-ui-label ${isDark ? 'border-[#333333] text-[#888888]' : 'border-blueprint-line text-blueprint-muted'}`}>
-          Planned
         </div>
       </div>
       <p className={`max-w-xl text-body-md ${isDark ? 'text-[#a3a3a3]' : 'text-blueprint-muted'}`}>{description}</p>
@@ -66,11 +62,10 @@ export function ScenarioMCQ({ className = '', variant }: { className?: string; v
 }
 
 export function GapAnalysisDashboard({ className = '', variant }: { className?: string; variant?: 'light' | 'dark' }) {
-  // MODULE: GapAnalysisDashboard — to be implemented.
   return (
     <PlaceholderSurface
       title="Gap Analysis Dashboard"
-      description="This space will hold topic gaps, session trends, and the next practice targets for the selected role."
+      description="Finish rounds to populate topic gaps, scores, and the next practice targets for the selected role."
       className={className}
       variant={variant}
     />

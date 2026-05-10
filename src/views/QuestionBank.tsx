@@ -21,7 +21,7 @@ function useInitialSearch() {
 export default function QuestionBank() {
   const initialSearch = useInitialSearch();
   const workspace = getStoredPrepWorkspace();
-  const [domain, setDomain] = useState('all');
+  const [domain, setDomain] = useState(workspace.selections.domain);
   const [type, setType] = useState<QuestionType | 'all'>('all');
   const [search, setSearch] = useState(initialSearch);
   const [faangOnly, setFaangOnly] = useState(false);
@@ -61,7 +61,7 @@ export default function QuestionBank() {
     };
   }, [domain, faangOnly, search, type]);
 
-  const totalQuestions = stats.reduce((sum, item) => sum + item.total, 0);
+  const selectedStats = stats.find((item) => item.id === workspace.selections.domain);
   const projectQuestions = workspace.repoAnalysis?.projectSpecificQuestions ?? workspace.manualAnalysis?.projectSpecificQuestions ?? [];
 
   return (
@@ -71,9 +71,9 @@ export default function QuestionBank() {
         <section className="grid gap-6 border-b border-blueprint-line pb-8 lg:grid-cols-[1fr_420px] lg:items-end">
           <div>
             <p className="text-ui-label text-blueprint-muted">Question Bank</p>
-            <h1 className="mt-2 text-display-xl text-primary">Static prep bank</h1>
+            <h1 className="mt-2 text-display-xl text-primary">{selectedStats?.label ?? 'Domain'} interview questions</h1>
             <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
-              {totalQuestions.toLocaleString()} original non-DSA technical prompts across domains, rounds, scenarios, coding, architecture, and mock interview practice.
+              Questions are filtered to your selected domain. Change your domain from Settings when you want a different track.
             </p>
           </div>
           <div className="surface-card-compact">
@@ -110,9 +110,9 @@ export default function QuestionBank() {
         <section className="grid gap-4 lg:grid-cols-[260px_1fr]">
           <aside className="space-y-4">
             <div className="surface-card-compact">
-              <p className="text-ui-label text-primary">Domain</p>
+              <p className="text-ui-label text-primary">Selected Domain</p>
               <div className="mt-3 max-h-[420px] space-y-2 overflow-y-auto pr-1">
-                {[{ id: 'all', label: 'All domains', total: totalQuestions }, ...stats].map((item) => (
+                {stats.filter((item) => item.id === workspace.selections.domain).map((item) => (
                   <button
                     key={item.id}
                     type="button"
@@ -124,6 +124,9 @@ export default function QuestionBank() {
                   </button>
                 ))}
               </div>
+              <button type="button" onClick={() => window.location.assign('/settings/preferences')} className="mt-3 text-ui-label text-blueprint-muted underline underline-offset-4 hover:text-primary">
+                Change domain
+              </button>
             </div>
 
             <div className="surface-card-compact">

@@ -29,9 +29,12 @@ export const DATABASE_SCHEMA_SQL = `
     user_id TEXT UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     sidebar_open BOOLEAN DEFAULT FALSE,
     theme TEXT DEFAULT 'light',
+    domain TEXT DEFAULT 'frontend',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   );
+
+  ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS domain TEXT DEFAULT 'frontend';
 
   CREATE TABLE IF NOT EXISTS questions (
     id TEXT PRIMARY KEY,

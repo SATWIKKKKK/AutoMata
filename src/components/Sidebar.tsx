@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   Activity,
-  BarChart2,
   ChevronLeft,
   FileText,
   Home,
@@ -23,13 +22,12 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS: Array<{ id: View; label: string; icon: React.ElementType }> = [
-  { id: 'dashboard', label: 'Prep Overview', icon: Home },
+  { id: 'dashboard', label: 'Dashboard', icon: Home },
   { id: 'workflows', label: 'Practice Tracks', icon: Workflow },
   { id: 'registry', label: 'Scenario Round', icon: FileText },
   { id: 'editor', label: 'Coding Round', icon: Terminal },
   { id: 'terminal', label: 'Mock Interview', icon: Activity },
   { id: 'questionBank', label: 'Question Bank', icon: LibraryBig },
-  { id: 'analytics', label: 'Gap Review', icon: BarChart2 },
 ];
 
 function NavButton({
@@ -74,8 +72,7 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
       <div className={cn('mb-8 flex items-center', isCollapsed ? 'justify-center' : 'justify-between')}>
         {!isCollapsed ? (
           <button type="button" onClick={() => onViewChange('dashboard')} className="text-left">
-            <div className="font-serif text-3xl leading-none text-primary">Promptly</div>
-            <p className="mt-1 text-ui-label text-blueprint-muted">Interview Prep</p>
+            <div className="font-serif text-3xl leading-none text-primary">Repoid</div>
           </button>
         ) : null}
 

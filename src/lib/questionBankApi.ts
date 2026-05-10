@@ -123,8 +123,11 @@ export async function submitRoundAttempt(attemptId: string, payload: {
   return { ok: true, data: result.data.attempt };
 }
 
-export async function fetchLatestRoundAttempt(roundType: string) {
-  const result = await requestJson<{ attempt: StoredRoundAttempt }>(`/api/round-attempts/latest/${encodeURIComponent(roundType)}`);
+export async function fetchLatestRoundAttempt(roundType: string, domain?: string) {
+  const params = new URLSearchParams();
+  if (domain) params.set('domain', domain);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const result = await requestJson<{ attempt: StoredRoundAttempt }>(`/api/round-attempts/latest/${encodeURIComponent(roundType)}${suffix}`);
   if ('error' in result) return { ok: false, error: result.error };
   return { ok: true, data: result.data.attempt };
 }

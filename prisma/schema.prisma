@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RepoScanStatus {
+  pending
+  complete
+  failed
+}
+
+model User {
+  id                   String                @id
+  githubRepos          GithubRepo[]
+  repoScanJobs         RepoScanJob[]
+  userRepoInteractions UserRepoInteraction[]
+
+  @@map("users")
+}
+
+model GithubRepo {
+  id              String                 @id @default(uuid())
+  userId          String                 @map("user_id")
+  repoUrl         String                 @map("repo_url")
+  repoName        String                 @map("repo_name")
+  detectedStack   Json                   @default("[]") @map("detected_stack")
+  status          RepoScanStatus         @default(pending)
+  scannedAt       DateTime               @default(now()) @map("scanned_at") @db.Timestamptz(6)
+  rawAnalysisJSON Json?                  @map("raw_analysis_json")
+  createdAt       DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime               @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questionSet     RepoQuestionSet?
+  interactions    UserRepoInteraction[]
+
+  @@unique([userId, repoUrl])
+  @@index([userId, scannedAt])
+  @@map("github_repos")
+}
+
+model RepoQuestionSet {
+  id             String     @id @default(uuid())
+  repoId         String     @unique @map("repo_id")
+  generatedAt    DateTime   @default(now()) @map("generated_at") @db.Timestamptz(6)
+  projectSummary String     @map("project_summary")
+  totalQuestions Int        @default(0) @map("total_questions")
+  sectionsJSON   Json       @map("sections_json")
+  repo           GithubRepo @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@map("repo_question_sets")
+}
+
+model RepoScanJob {
+  id           String         @id @default(uuid())
+  userId       String         @map("user_id")
+  repoUrl      String         @map("repo_url")
+  status       RepoScanStatus @default(pending)
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt  DateTime?      @map("completed_at") @db.Timestamptz(6)
+  errorMessage String?        @map("error_message")
+  retryCount   Int            @default(0) @map("retry_count")
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+  @@map("repo_scan_jobs")
+}
+
+model UserRepoInteraction {
+  id         String     @id @default(uuid())
+  userId     String     @map("user_id")
+  repoId     String     @map("repo_id")
+  questionId String     @map("question_id")
+  viewedAt   DateTime   @default(now()) @map("viewed_at") @db.Timestamptz(6)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repo       GithubRepo @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@index([userId, repoId, viewedAt])
+  @@map("user_repo_interactions")
+}

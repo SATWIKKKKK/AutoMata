@@ -14,7 +14,7 @@
   --color-primary: #1a1a1a;
   --color-background: #fbf9f9;
   --color-blueprint-bg: #fbf9f9;
-  --color-blueprint-line: #e4e2e2;
+  --color-blueprint-line: #d4d0d0;
   --color-blueprint-accent: #000000;
   --color-blueprint-muted: #444748;
 }
@@ -125,22 +125,22 @@
     @apply font-sans text-[14px] leading-[1.15] tracking-[0] font-medium uppercase;
   }
   .surface-card {
-    border: 1px solid var(--color-blueprint-line);
-    border-radius: 1.5rem;
-    background: rgba(255, 255, 255, 0.88);
+    border: 1.25px solid var(--color-blueprint-line);
+    border-radius: 0.75rem;
+    background: rgba(255, 255, 255, 0.92);
     padding: 1.5rem;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.04);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.045);
   }
   .surface-card-compact {
-    border: 1px solid var(--color-blueprint-line);
-    border-radius: 1.25rem;
-    background: rgba(255, 255, 255, 0.88);
+    border: 1.25px solid var(--color-blueprint-line);
+    border-radius: 0.75rem;
+    background: rgba(255, 255, 255, 0.92);
     padding: 1rem 1.25rem;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.035);
   }
   .surface-inset {
-    border: 1px solid rgba(228, 226, 226, 0.9);
-    border-radius: 1rem;
+    border: 1.25px solid rgba(212, 208, 208, 0.95);
+    border-radius: 0.75rem;
     background: #fbf9f9;
     padding: 1rem;
   }
@@ -282,6 +282,10 @@
 }
 
 .dark {
+  --color-blueprint-line: #3a3a3a;
+  --color-blueprint-muted: #b7b7b7;
+  --color-blueprint-bg: #151515;
+  --color-background: #151515;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -313,4 +317,21 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+}
+
+.dark .blueprint-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+}
+
+.dark .surface-card,
+.dark .surface-card-compact {
+  background: rgba(28, 28, 28, 0.94);
+  border-color: #3a3a3a;
+}
+
+.dark .surface-inset {
+  background: #202020;
+  border-color: #3a3a3a;
 }

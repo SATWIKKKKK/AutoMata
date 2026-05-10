@@ -40,13 +40,14 @@ export default function ResultsPage() {
       observations: [],
     })) ?? []
   ), [storedResult]);
-  const focusAreas = attempt?.focusAreas.length ? attempt.focusAreas : (storedResult?.focusAreas.length ? storedResult.focusAreas : weakPoints.slice(0, 4));
-  const nextSteps = attempt?.nextSteps.length ? attempt.nextSteps : (storedResult?.nextSteps.length ? storedResult.nextSteps : [
+  const hasResult = Boolean(attempt || storedResult);
+  const focusAreas = attempt?.focusAreas.length ? attempt.focusAreas : (storedResult?.focusAreas.length ? storedResult.focusAreas : (hasResult ? weakPoints.slice(0, 4) : []));
+  const nextSteps = attempt?.nextSteps.length ? attempt.nextSteps : (storedResult?.nextSteps.length ? storedResult.nextSteps : (hasResult ? [
     'Open the question bank and drill one weak topic before the next timed attempt.',
     'Repeat the same round only after you can explain the failure mode clearly.',
     'Carry one concrete fix into the next session instead of restarting from scratch.',
-  ]);
-  const readinessScore = attempt?.score ?? storedResult?.score ?? 78;
+  ] : []));
+  const readinessScore = attempt?.score ?? storedResult?.score ?? 0;
   const answeredQuestions = attempt?.answers.filter((answer) => Boolean(answer.selectedAnswer ?? answer.codeAnswer)).length ?? storedResult?.answeredQuestions ?? 0;
   const totalQuestions = attempt?.totalQuestions ?? storedResult?.totalQuestions ?? 0;
   const correctAnswers = attempt?.correctAnswers ?? storedResult?.correctAnswers ?? 0;
@@ -74,7 +75,7 @@ export default function ResultsPage() {
             <p className="text-ui-label text-blueprint-muted">{domainLabel} analysis</p>
             <h1 className="mt-2 text-display-xl text-primary">{title}</h1>
             <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
-              {attempt?.summary || 'Here is the latest round-level breakdown. If no persisted attempt exists yet, the page falls back to the local round summary.'}
+              {attempt?.summary || storedResult?.roundName ? 'Here is the latest saved round-level breakdown.' : 'No saved result exists for this round yet. Finish a round to generate this page.'}
             </p>
           </div>
           <button type="button" onClick={() => navigate('/practice-tracks')} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">
@@ -97,14 +98,14 @@ export default function ResultsPage() {
             <h2 className="text-headline-md text-primary not-italic">Section Breakdown</h2>
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               {[
-                ['Round score', `${readinessScore}%`, `w-[${readinessScore}%]`],
-                ['Completion', `${Math.round((answeredQuestions / Math.max(totalQuestions, 1)) * 100)}%`, `w-[${Math.round((answeredQuestions / Math.max(totalQuestions, 1)) * 100)}%]`],
-                ['Accuracy', `${Math.round((correctAnswers / Math.max(totalQuestions, 1)) * 100)}%`, `w-[${Math.round((correctAnswers / Math.max(totalQuestions, 1)) * 100)}%]`],
-                ['Retention target', `${Math.max(60, Math.min(95, readinessScore + 8))}%`, `w-[${Math.max(60, Math.min(95, readinessScore + 8))}%]`],
-              ].map(([label, value, width]) => (
+                ['Round score', readinessScore],
+                ['Completion', Math.round((answeredQuestions / Math.max(totalQuestions, 1)) * 100)],
+                ['Accuracy', Math.round((correctAnswers / Math.max(totalQuestions, 1)) * 100)],
+                ['Retention target', totalQuestions ? Math.max(60, Math.min(95, readinessScore + 8)) : 0],
+              ].map(([label, value]) => (
                 <div key={label} className="surface-inset">
-                  <div className="mb-3 flex items-center justify-between text-body-md text-primary"><span>{label}</span><span>{value}</span></div>
-                  <div className="h-2 rounded-full bg-blueprint-line"><div className={`h-full rounded-full bg-primary ${width}`} /></div>
+                  <div className="mb-3 flex items-center justify-between text-body-md text-primary"><span>{label}</span><span>{value}%</span></div>
+                  <div className="h-2 rounded-full bg-blueprint-line"><div className="h-full rounded-full bg-primary" style={{ width: `${value}%` }} /></div>
                 </div>
               ))}
             </div>

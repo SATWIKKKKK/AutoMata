@@ -33,7 +33,7 @@ export default function Landing({ onViewChange }: LandingProps) {
       <nav className="sticky top-0 z-40 border-b border-blueprint-line bg-white/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 w-full max-w-360 items-center justify-between px-4 sm:px-8 lg:px-12">
           <button type="button" onClick={() => onViewChange('dashboard')} className="font-serif text-[clamp(2rem,4vw,42px)] leading-none text-primary">
-            Promptly
+            Repoid
           </button>
           <div className="flex items-center gap-3">
             {isAuthed ? (

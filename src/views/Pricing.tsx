@@ -53,7 +53,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
               onClick={() => onViewChange('landing')}
               className="font-serif italic text-2xl md:text-3xl text-primary tracking-tight"
             >
-              Promptly
+              Repoid
             </button>
           </div>
 
@@ -309,10 +309,10 @@ export default function Pricing({ onViewChange }: PricingProps) {
               onClick={() => onViewChange('landing')}
               className="font-serif text-xl text-primary tracking-tighter"
             >
-              Promptly
+              Repoid
             </button>
             <span className="text-xs uppercase tracking-widest text-on-surface-variant">
-              © 2026 Automata. Autonomous Intelligence.
+              2026 Repoid. All rights reserved.
             </span>
           </div>
           <ul className="flex flex-wrap justify-center gap-6 text-xs uppercase tracking-widest">

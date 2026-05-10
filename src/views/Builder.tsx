@@ -55,7 +55,6 @@ export default function Builder(_props: BuilderProps) {
   const [interviewType, setInterviewType] = useState(storedWorkspace.selections.interviewType || DEFAULT_PREP_SELECTIONS.interviewType);
   const [timeline, setTimeline] = useState(storedWorkspace.selections.timeline || DEFAULT_PREP_SELECTIONS.timeline);
   const [repositoryUrl, setRepositoryUrl] = useState(storedWorkspace.selections.repositoryUrl || '');
-  const [projectMode, setProjectMode] = useState<'repo' | 'skip'>('repo');
   const [error, setError] = useState<string | null>(null);
   const [scanningUrl, setScanningUrl] = useState<string | null>(null);
 
@@ -71,29 +70,51 @@ export default function Builder(_props: BuilderProps) {
         companyType,
         timeline,
         experienceLevel: storedWorkspace.selections.experienceLevel,
-        repositoryUrl: projectMode === 'repo' ? repositoryUrl : '',
+        repositoryUrl,
         manualDescription: '',
       },
     };
 
     updatePrepWorkspace(baseUpdate);
+    void fetch('/api/users/preferences', {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain }),
+    }).catch(() => undefined);
 
-    if (projectMode === 'repo' && !repositoryUrl.trim()) {
+    if (!repositoryUrl.trim()) {
       setError('Paste a GitHub repository URL or choose skip.');
       return;
     }
-    if (projectMode === 'repo' && !isValidGithubRepoUrl(repositoryUrl)) {
+    if (!isValidGithubRepoUrl(repositoryUrl)) {
       setError('Please paste a valid GitHub repository URL.');
       return;
     }
 
-    if (projectMode === 'skip') {
-      markOnboardingComplete();
-      navigate('/dashboard');
-      return;
-    }
-
     setScanningUrl(repositoryUrl.trim());
+  };
+
+  const skipProject = () => {
+    updatePrepWorkspace({
+      selections: {
+        domain,
+        interviewType,
+        companyType,
+        timeline,
+        experienceLevel: storedWorkspace.selections.experienceLevel,
+        repositoryUrl: '',
+        manualDescription: '',
+      },
+    });
+    void fetch('/api/users/preferences', {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain }),
+    }).catch(() => undefined);
+    markOnboardingComplete();
+    navigate('/dashboard');
   };
 
   const canGoNext = (
@@ -110,7 +131,7 @@ export default function Builder(_props: BuilderProps) {
         <div className="rounded-2xl border border-blueprint-line bg-white/92 p-6 shadow-[0_20px_48px_rgba(0,0,0,0.05)] sm:p-10">
           <div className="mb-10 flex items-center justify-between gap-4">
             <button type="button" onClick={() => navigate('/dashboard')} className="font-serif text-3xl leading-none text-primary">
-              Promptly
+              Repoid
             </button>
             <div className="flex gap-2">
               {progress.map((item) => (
@@ -189,29 +210,26 @@ export default function Builder(_props: BuilderProps) {
                     Paste a public GitHub repository to build code-specific interview questions, or skip and continue without a project attached.
                   </p>
                   <div className="mt-8 grid gap-4">
-                    <button
-                      type="button"
-                      onClick={() => setProjectMode('repo')}
-                      className={`rounded-xl border p-5 text-left transition-colors ${projectMode === 'repo' ? 'border-primary bg-white' : 'border-blueprint-line bg-[#fbf9f9]'}`}
-                    >
-                      <p className="text-body-lg font-semibold text-primary">Paste a GitHub repo URL</p>
+                    <div className="rounded-xl border border-primary bg-white p-5">
+                      <label className="text-body-lg font-semibold text-primary" htmlFor="repository-url">GitHub repo URL</label>
                       <input
+                        id="repository-url"
                         type="url"
                         value={repositoryUrl}
                         onChange={(event) => {
-                          setProjectMode('repo');
+                          setError(null);
                           setRepositoryUrl(event.target.value);
                         }}
                         placeholder="https://github.com/owner/repo"
                         className="mt-4 w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none placeholder:text-blueprint-muted focus:border-primary"
                       />
-                    </button>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => setProjectMode('skip')}
-                      className={`rounded-xl border p-5 text-left transition-colors ${projectMode === 'skip' ? 'border-primary bg-white' : 'border-blueprint-line bg-[#fbf9f9]'}`}
+                      onClick={skipProject}
+                      className="rounded-xl border border-blueprint-line bg-[#fbf9f9] p-5 text-left transition-colors hover:border-primary hover:bg-white"
                     >
-                      <p className="text-body-lg font-semibold text-primary">Skip project for now</p>
+                      <p className="text-body-lg font-semibold text-primary">Skip for now</p>
                       <p className="mt-2 text-body-md text-blueprint-muted">Go straight to {DOMAIN_LABELS[domain]?.toLowerCase() ?? 'domain'} prep.</p>
                     </button>
                   </div>
@@ -230,7 +248,7 @@ export default function Builder(_props: BuilderProps) {
                   </button>
                 ) : (
                   <button type="button" onClick={finishOnboarding} className="rounded-full bg-primary px-8 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">
-                    {projectMode === 'repo' ? 'Submit' : 'Skip for Now'}
+                    Submit
                   </button>
                 )}
               </footer>

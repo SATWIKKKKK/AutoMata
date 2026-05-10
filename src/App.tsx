@@ -20,14 +20,14 @@ import QuestionBank from './views/QuestionBank';
 import ResultsPage from './views/ResultsPage';
 import GithubRepos from './views/GithubRepos';
 import GithubProjectQuestions from './views/GithubProjectQuestions';
-import { Privacy, SecurityPage, Terms } from './views/Legal';
+import { Contact, Privacy, SecurityPage, Terms } from './views/Legal';
 import { fetchCurrentUser, getStoredUser, persistSessionUser, SessionUser } from './lib/session';
-import { isOnboardingComplete } from './lib/prep';
+import { getStoredPrepWorkspace, isOnboardingComplete, updatePrepWorkspace } from './lib/prep';
 
 export type View =
   | 'landing' | 'dashboard' | 'builder' | 'terminal' | 'editor' | 'registry' | 'analytics'
   | 'workflows' | 'questionBank' | 'pulse' | 'docs' | 'settings' | 'auth' | 'signup'
-  | 'pricing' | 'privacy' | 'terms' | 'security';
+  | 'pricing' | 'privacy' | 'terms' | 'security' | 'contact';
 
 function ProtectedRoute({
   children,
@@ -117,6 +117,7 @@ function AppShell() {
     '/privacy': 'privacy',
     '/terms': 'terms',
     '/security': 'security',
+    '/contact': 'contact',
   };
 
   const currentView: View = isResultsPath
@@ -124,20 +125,21 @@ function AppShell() {
     : (isSettingsPath ? 'settings' : (pathToView[location.pathname] ?? 'landing'));
 
   const headerTitle = ({
-    dashboard: 'Prep Overview',
+    dashboard: 'Dashboard',
     builder: 'Onboarding',
     workflows: 'Practice Tracks',
     registry: 'Scenario Round',
     editor: 'Coding Round',
     terminal: 'Mock Interview',
-    analytics: 'Gap Review',
+    analytics: 'Dashboard',
     questionBank: 'Question Bank',
-    pulse: 'Session Feedback',
+    pulse: 'Results',
     settings: 'Settings',
     privacy: 'Privacy',
     terms: 'Terms',
     security: 'Security',
-  } as Record<View, string | undefined>)[currentView] ?? 'Promptly';
+    contact: 'Contact',
+  } as Record<View, string | undefined>)[currentView] ?? 'Repoid';
 
   const handleViewChange = (view: View) => {
     const destination = ({
@@ -150,7 +152,7 @@ function AppShell() {
       registry: '/scenario-round',
       editor: '/coding-round',
       terminal: '/mock-interview',
-      analytics: '/gap-review',
+      analytics: '/dashboard',
       questionBank: '/question-bank',
       pulse: '/results/practice-tracks',
       settings: '/settings/profile',
@@ -159,6 +161,7 @@ function AppShell() {
       privacy: '/privacy',
       terms: '/terms',
       security: '/security',
+      contact: '/contact',
     } as Record<View, string>)[view];
 
     setIsMobileSidebarOpen(false);
@@ -172,11 +175,16 @@ function AppShell() {
     void fetch('/api/users/preferences', { credentials: 'include' })
       .then(async (response) => {
         if (!response.ok) return null;
-        return response.json() as Promise<{ sidebarOpen?: boolean }>;
+        return response.json() as Promise<{ sidebarOpen?: boolean; theme?: string; domain?: string }>;
       })
       .then((data) => {
-        if (!data || ignore || typeof data.sidebarOpen !== 'boolean') return;
-        setIsSidebarCollapsed(!data.sidebarOpen);
+        if (!data || ignore) return;
+        if (typeof data.sidebarOpen === 'boolean') setIsSidebarCollapsed(!data.sidebarOpen);
+        if (typeof data.domain === 'string') updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: data.domain } });
+        if (typeof data.theme === 'string') {
+          const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+          document.documentElement.classList.toggle('dark', data.theme === 'dark' || (data.theme === 'system' && prefersDark));
+        }
       })
       .catch(() => undefined);
 
@@ -242,7 +250,7 @@ function AppShell() {
             <Route path="/editor" element={<Navigate to="/coding-round" replace />} />
             <Route path="/mock-interview" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><TerminalPage onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/terminal" element={<Navigate to="/mock-interview" replace />} />
-            <Route path="/gap-review" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Analytics /></ProtectedRoute>} />
+            <Route path="/gap-review" element={<Navigate to="/dashboard" replace />} />
             <Route path="/analytics" element={<Navigate to="/gap-review" replace />} />
             <Route path="/question-bank" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><QuestionBank /></ProtectedRoute>} />
             <Route path="/github-repos" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><GithubRepos /></ProtectedRoute>} />
@@ -259,6 +267,7 @@ function AppShell() {
             <Route path="/privacy" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Privacy onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/terms" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Terms onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/security" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SecurityPage onViewChange={handleViewChange} /></ProtectedRoute>} />
+            <Route path="/contact" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Contact onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/legal/privacy" element={<Navigate to="/privacy" replace />} />
             <Route path="/legal/terms" element={<Navigate to="/terms" replace />} />
             <Route path="/legal/security" element={<Navigate to="/security" replace />} />
