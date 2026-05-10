@@ -1144,13 +1144,16 @@ async function getUserSelectedDomain(userId: string) {
   return normalizeDomain(row?.domain);
 }
 
-async function createApp() {
+export async function createApp(options: { listen?: boolean } = {}) {
+  const listen = options.listen ?? true;
   const app = express();
   app.disable('x-powered-by');
   app.use(cors({ origin: true, credentials: true }));
   app.use(express.json());
 
-  await ensureQuestionBankSeeded();
+  if (process.env.NODE_ENV !== 'production' || process.env.SEED_QUESTIONS_ON_START === 'true') {
+    await ensureQuestionBankSeeded();
+  }
 
   app.get('/api/health', async (_request, response) => {
     await db.query('SELECT 1');
@@ -1999,21 +2002,27 @@ async function createApp() {
     });
   }
 
-  const port = readPort('PORT', 3000);
-  const server = app.listen(port, () => {
-    console.log(`Repoid server listening on http://localhost:${port}`);
-  });
-  server.on('error', (error: NodeJS.ErrnoException) => {
-    if (error.code === 'EADDRINUSE') {
-      const suggestedPort = port === 3000 ? 3001 : port + 1;
-      console.error(`Port ${port} is already in use. Stop the process using it, or set a different PORT in .env, for example PORT=${suggestedPort}.`);
-      process.exit(1);
-    }
-    throw error;
-  });
+  if (listen) {
+    const port = readPort('PORT', 3000);
+    const server = app.listen(port, () => {
+      console.log(`Repoid server listening on http://localhost:${port}`);
+    });
+    server.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
+        const suggestedPort = port === 3000 ? 3001 : port + 1;
+        console.error(`Port ${port} is already in use. Stop the process using it, or set a different PORT in .env, for example PORT=${suggestedPort}.`);
+        process.exit(1);
+      }
+      throw error;
+    });
+  }
+
+  return app;
 }
 
-createApp().catch((error) => {
-  console.error('Failed to start Repoid server:', error);
-  process.exit(1);
-});
+if (!process.env.VERCEL) {
+  createApp().catch((error) => {
+    console.error('Failed to start Repoid server:', error);
+    process.exit(1);
+  });
+}
