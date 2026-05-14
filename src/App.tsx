@@ -14,6 +14,7 @@ import Workflows from './views/Workflows';
 import Pulse from './views/Pulse';
 import Landing from './views/Landing';
 import Auth from './views/Auth';
+import Pricing from './views/Pricing';
 import WorkflowDetail from './views/WorkflowDetail';
 import Settings from './views/Settings';
 import QuestionBank from './views/QuestionBank';
@@ -22,7 +23,7 @@ import GithubRepos from './views/GithubRepos';
 import GithubProjectQuestions from './views/GithubProjectQuestions';
 import { Contact, Privacy, SecurityPage, Terms } from './views/Legal';
 import { fetchCurrentUser, getStoredUser, persistSessionUser, SessionUser } from './lib/session';
-import { getStoredPrepWorkspace, updatePrepWorkspace } from './lib/prep';
+import { getStoredPrepWorkspace, isOnboardingComplete, updatePrepWorkspace } from './lib/prep';
 import { applyThemePreference, normalizeThemePreference } from './lib/theme';
 import { fetchUserPreferences } from './lib/userPreferences';
 
@@ -60,6 +61,7 @@ function AppShell() {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [user, setUser] = useState<SessionUser | null>(() => getStoredUser());
   const [sessionChecked, setSessionChecked] = useState(() => Boolean(getStoredUser()));
+  const [onboardingComplete, setOnboardingComplete] = useState(() => isOnboardingComplete());
 
   useEffect(() => {
     let ignore = false;
@@ -87,9 +89,11 @@ function AppShell() {
   }, []);
 
   const isResultsPath = Boolean(matchPath('/results/:roundType', location.pathname));
+  const isRoundPath = Boolean(matchPath('/round/*', location.pathname));
+  const isLiveRoundPath = ['/scenario-round', '/coding-round', '/mock-interview'].includes(location.pathname);
   const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
   const isAuthShellPath = ['/', '/signin', '/login', '/signup', '/onboarding'].includes(location.pathname);
-  const showAppChrome = Boolean(user?.loggedIn) && !isAuthShellPath;
+  const showAppChrome = Boolean(user?.loggedIn) && !isAuthShellPath && !isRoundPath && !isLiveRoundPath;
 
   const pathToView: Record<string, View> = {
     '/': 'landing',
@@ -113,6 +117,7 @@ function AppShell() {
     '/results': 'pulse',
     '/pulse': 'pulse',
     '/settings': 'settings',
+    '/pricing': 'pricing',
     '/privacy': 'privacy',
     '/terms': 'terms',
     '/security': 'security',
@@ -134,6 +139,7 @@ function AppShell() {
     questionBank: 'Question Bank',
     pulse: 'Results',
     settings: 'Settings',
+    pricing: 'Pricing',
     privacy: 'Privacy',
     terms: 'Terms',
     security: 'Security',
@@ -156,7 +162,7 @@ function AppShell() {
       pulse: '/results/practice-tracks',
       settings: '/settings/profile',
       docs: '/',
-      pricing: '/',
+      pricing: '/pricing',
       privacy: '/privacy',
       terms: '/terms',
       security: '/security',
@@ -175,7 +181,9 @@ function AppShell() {
       .then((result) => {
         if (!result.ok || ignore) return;
         setIsSidebarCollapsed(!result.data.sidebarOpen);
-        updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: result.data.domain } });
+        if (result.data.domain) {
+          updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: result.data.domain } });
+        }
         applyThemePreference(normalizeThemePreference(result.data.theme));
       })
       .catch(() => undefined);
@@ -197,6 +205,8 @@ function AppShell() {
       }).catch(() => undefined);
     }
   };
+
+  const hasCompletedOnboarding = onboardingComplete || isOnboardingComplete();
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
@@ -225,22 +235,25 @@ function AppShell() {
         {showAppChrome ? <Header view={currentView} title={headerTitle} onViewChange={handleViewChange} onMenuToggle={() => setIsMobileSidebarOpen(true)} /> : null}
         <main className="flex-1 overflow-y-auto overflow-x-hidden">
           <Routes>
-            <Route path="/" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
-            <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); navigate('/dashboard'); }} onBackToLanding={() => navigate('/')} />} />
+            <Route path="/" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
+            <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(isOnboardingComplete()); navigate('/dashboard'); }} onBackToLanding={() => navigate('/')} />} />
             <Route path="/login" element={<Navigate to="/signin" replace />} />
-            <Route path="/signup" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="signup" onAuthSuccess={() => { setUser(getStoredUser()); navigate('/onboarding'); }} onBackToLanding={() => navigate('/')} />} />
+            <Route path="/signup" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Auth initialMode="signup" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(false); navigate('/onboarding'); }} onBackToLanding={() => navigate('/')} />} />
 
-            <Route path="/dashboard" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Dashboard /></ProtectedRoute>} />
+            <Route path="/dashboard" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}>{hasCompletedOnboarding ? <Dashboard /> : <Navigate to="/onboarding" replace />}</ProtectedRoute>} />
             <Route path="/onboarding" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Builder onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/builder" element={<Navigate to="/onboarding" replace />} />
             <Route path="/practice-tracks" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Workflows /></ProtectedRoute>} />
             <Route path="/workflows" element={<Navigate to="/practice-tracks" replace />} />
             <Route path="/workflows/:id" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><WorkflowDetail /></ProtectedRoute>} />
             <Route path="/scenario-round" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Registry /></ProtectedRoute>} />
+            <Route path="/round/scenario/:attemptId?" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Registry /></ProtectedRoute>} />
             <Route path="/registry" element={<Navigate to="/scenario-round" replace />} />
             <Route path="/coding-round" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Editor workflow={null} onSave={() => undefined} /></ProtectedRoute>} />
+            <Route path="/round/coding/:attemptId?" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Editor workflow={null} onSave={() => undefined} /></ProtectedRoute>} />
             <Route path="/editor" element={<Navigate to="/coding-round" replace />} />
             <Route path="/mock-interview" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><TerminalPage onViewChange={handleViewChange} /></ProtectedRoute>} />
+            <Route path="/round/mock/:interviewId?" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><TerminalPage onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/terminal" element={<Navigate to="/mock-interview" replace />} />
             <Route path="/gap-review" element={<Navigate to="/dashboard" replace />} />
             <Route path="/analytics" element={<Navigate to="/gap-review" replace />} />
@@ -255,7 +268,7 @@ function AppShell() {
             <Route path="/settings/:tab" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SettingsRoute onViewChange={handleViewChange} /></ProtectedRoute>} />
 
             <Route path="/docs" element={<Navigate to="/onboarding" replace />} />
-            <Route path="/pricing" element={<Navigate to="/" replace />} />
+            <Route path="/pricing" element={<Pricing onViewChange={handleViewChange} />} />
             <Route path="/privacy" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Privacy onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/terms" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Terms onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/security" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SecurityPage onViewChange={handleViewChange} /></ProtectedRoute>} />

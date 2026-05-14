@@ -28,7 +28,7 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
   const user = getStoredUser();
   const workspace = usePrepWorkspace();
   const themePreference = useThemePreference();
-  const roleLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend';
+  const roleLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Choose domain';
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [domainDialogOpen, setDomainDialogOpen] = useState(false);
   const [domainError, setDomainError] = useState<string | null>(null);

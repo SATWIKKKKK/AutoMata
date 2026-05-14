@@ -1,11 +1,22 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { Suspense, useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import RoundGuard from '../components/RoundGuard';
+import RoundShell from '../components/RoundShell';
 import { DOMAIN_LABELS } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import { startRoundAttempt, submitRoundAttempt, type StoredRoundAttempt } from '../lib/questionBankApi';
+import { fetchServerDraft, readLocalDraft, saveLocalDraft, saveServerDraft, shouldPromptForLocalDraft } from '../lib/roundRuntime';
+
+const LazyCodeEditor = React.lazy(() => import('../components/LazyCodeEditor'));
 
 type WorkflowDAG = unknown;
+
+type CodingDraftPayload = {
+  code?: string;
+  notes?: string;
+  language?: string;
+  savedAt?: string;
+};
 
 interface EditorProps {
   workflow: WorkflowDAG | null;
@@ -22,8 +33,16 @@ export default function Editor(_props: EditorProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draftChecks, setDraftChecks] = useState<string[]>([]);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const question = attempt?.questions[0] ?? null;
+  const codeRef = React.useRef('');
   const questionLabel = useMemo(() => DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend', [workspace.selections.domain]);
+  const language = useMemo(() => {
+    const domain = workspace.selections.domain;
+    if (domain === 'data-science' || domain === 'ai-ml') return 'python';
+    if (domain === 'data-analytics') return 'sql';
+    return 'typescript';
+  }, [workspace.selections.domain]);
 
   const startAttempt = useCallback(async () => {
     if (attempt || loadingAttempt) return;
@@ -41,15 +60,36 @@ export default function Editor(_props: EditorProps) {
       throw new Error(result.error);
     }
     setAttempt(result.data);
-    setCodeAnswer(result.data.questions[0]?.codeSnippet ?? '');
+
+    const starterCode = result.data.questions[0]?.codeSnippet ?? '';
+    let restoredCode = starterCode;
+    let restoredNotes = '';
+    const serverDraft = await fetchServerDraft<CodingDraftPayload>('coding-round', result.data.id);
+    const localDraft = readLocalDraft<CodingDraftPayload>('coding-round', result.data.id);
+    if (serverDraft.ok && serverDraft.data?.payload?.code) {
+      restoredCode = serverDraft.data.payload.code;
+      restoredNotes = serverDraft.data.payload.notes ?? '';
+    }
+    if (localDraft?.payload?.code) {
+      const useLocal = shouldPromptForLocalDraft(localDraft.savedAt, serverDraft.ok ? serverDraft.data?.savedAt : null)
+        ? window.confirm('We found a more recent local draft. Restore it?')
+        : !serverDraft.ok || !serverDraft.data?.payload?.code;
+      if (useLocal) {
+        restoredCode = localDraft.payload.code;
+        restoredNotes = localDraft.payload.notes ?? restoredNotes;
+      }
+    }
+    setCodeAnswer(restoredCode);
+    setNotes(restoredNotes);
+    codeRef.current = restoredCode;
   }, [attempt, loadingAttempt, workspace.selections.domain]);
 
   const runDraftChecks = () => {
     const nextChecks = [
-      codeAnswer.trim().length >= 80 ? 'Substantial solution draft captured.' : 'Expand the draft so the main logic is visible.',
-      /\breturn\b|\byield\b/.test(codeAnswer) ? 'Return path found.' : 'Add an explicit return path.',
-      /\bif\b|\belse\b|\btry\b|\bcatch\b/.test(codeAnswer) ? 'Conditional or recovery handling found.' : 'Show one clear edge-case or recovery branch.',
-      /error|throw|validate|guard|abort|rollback|idempot|dedup|cache|cleanup/i.test(codeAnswer + notes) ? 'Defensive handling or production note found.' : 'Explain one defensive or production-oriented check.',
+      codeRef.current.trim().length >= 80 ? 'Substantial solution draft captured.' : 'Expand the draft so the main logic is visible.',
+      /\breturn\b|\byield\b/.test(codeRef.current) ? 'Return path found.' : 'Add an explicit return path.',
+      /\bif\b|\belse\b|\btry\b|\bcatch\b/.test(codeRef.current) ? 'Conditional or recovery handling found.' : 'Show one clear edge-case or recovery branch.',
+      /error|throw|validate|guard|abort|rollback|idempot|dedup|cache|cleanup/i.test(codeRef.current + notes) ? 'Defensive handling or production note found.' : 'Explain one defensive or production-oriented check.',
     ];
     setDraftChecks(nextChecks);
   };
@@ -58,7 +98,7 @@ export default function Editor(_props: EditorProps) {
     if (!attempt || submitting) return;
     setSubmitting(true);
     const result = await submitRoundAttempt(attempt.id, {
-      answers: [{ questionId: question?.id ?? '', codeAnswer, notes }],
+      answers: [{ questionId: question?.id ?? '', codeAnswer: codeRef.current || codeAnswer, notes }],
       autoSubmitted,
       timeSpentSeconds: attempt.durationMinutes * 60,
     });
@@ -68,14 +108,32 @@ export default function Editor(_props: EditorProps) {
       return;
     }
     setAttempt(result.data);
-    if (!autoSubmitted) navigate('/results/coding-round');
+    if (!autoSubmitted) setReviewOpen(true);
   }, [attempt, codeAnswer, notes, navigate, question?.id, submitting]);
+
+  React.useEffect(() => {
+    if (!attempt) return undefined;
+    const save = () => {
+      const payload = { code: codeRef.current, notes, language, savedAt: new Date().toISOString() };
+      saveLocalDraft('coding-round', attempt.id, payload);
+      void saveServerDraft('coding-round', attempt.id, payload);
+    };
+    const interval = window.setInterval(save, 60000);
+    const onHidden = () => {
+      if (document.hidden) save();
+    };
+    document.addEventListener('visibilitychange', onHidden);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onHidden);
+    };
+  }, [attempt, language, notes]);
 
   return (
     <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-12">
       <RoundGuard roundName="Coding Round" durationMinutes={45} resultsPath="/results/coding-round" onStart={startAttempt} onExpire={() => finishRound(true)}>
         {({ formattedTime, inputsLocked }) => (
-          <>
+          <RoundShell attemptId={attempt?.id} feature="coding-round" label={`${questionLabel} Coding Round`} startedAt={attempt?.startedAt} counter={question ? question.topic : 'Problem'} onEndEarly={() => { void finishRound(false); }}>
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
       <main className="relative z-10 mx-auto w-full max-w-360">
         <div className="grid gap-8 lg:grid-cols-12">
@@ -114,6 +172,23 @@ export default function Editor(_props: EditorProps) {
                   {question?.correctAnswer ?? 'The expected answer pattern for this question will appear in your results.'}
                 </div>
               </div>
+              {reviewOpen && attempt?.results?.[0] ? (
+                <div className="rounded-xl border border-blueprint-line bg-card p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-ui-label text-primary">AI Review</h2>
+                    <span className="rounded-full bg-[#efeded] px-3 py-1 text-ui-label text-blueprint-muted">{attempt.results[0].score}/100</span>
+                  </div>
+                  <p className="mt-3 text-body-md text-blueprint-muted">{attempt.results[0].explanation}</p>
+                  {attempt.results[0].observations.length ? (
+                    <ul className="mt-3 space-y-2 text-body-md text-primary">
+                      {attempt.results[0].observations.map((item) => <li key={item}>{item}</li>)}
+                    </ul>
+                  ) : null}
+                  <button type="button" onClick={() => navigate('/results/coding-round')} className="mt-4 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]">
+                    Open Full Results
+                  </button>
+                </div>
+              ) : null}
               {draftChecks.length ? (
                 <div>
                   <h2 className="border-b border-blueprint-line/50 pb-2 text-ui-label text-primary">Draft Checks</h2>
@@ -144,14 +219,21 @@ export default function Editor(_props: EditorProps) {
               </div>
             </div>
             <div className="min-h-[440px] border-b border-[#333333] bg-[#1A1A1A] p-4">
-              <textarea
-                value={codeAnswer}
-                onChange={(event) => setCodeAnswer(event.target.value)}
-                disabled={inputsLocked || !question}
-                spellCheck={false}
-                className="h-[360px] w-full resize-none rounded-lg border border-[#333333] bg-[#111111] p-4 font-mono text-[13px] leading-6 text-[#d4d4d4] outline-none disabled:cursor-not-allowed disabled:opacity-70"
-                placeholder="Your coding answer appears here once the round starts."
-              />
+              <Suspense fallback={<div className="h-[360px] animate-pulse rounded-lg border border-[#333333] bg-[#111111]" />}>
+                {question ? (
+                  <LazyCodeEditor
+                    value={codeAnswer}
+                    language={language}
+                    editable={!inputsLocked && Boolean(question)}
+                    onChange={(value) => {
+                      codeRef.current = value;
+                      saveLocalDraft('coding-round', attempt?.id ?? 'pending', { code: value, notes, language, savedAt: new Date().toISOString() });
+                    }}
+                  />
+                ) : (
+                  <div className="h-[360px] rounded-lg border border-[#333333] bg-[#111111]" />
+                )}
+              </Suspense>
               <textarea
                 value={notes}
                 onChange={(event) => setNotes(event.target.value)}
@@ -180,7 +262,7 @@ export default function Editor(_props: EditorProps) {
           </section>
         </div>
       </main>
-          </>
+          </RoundShell>
         )}
       </RoundGuard>
     </div>

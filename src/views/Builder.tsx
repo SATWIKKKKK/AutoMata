@@ -44,6 +44,11 @@ export default function Builder(_props: BuilderProps) {
 
   const finishOnboarding = async () => {
     setError(null);
+    if (!domain) {
+      setError('Choose your interview domain before continuing.');
+      return;
+    }
+
     const baseUpdate = {
       selections: {
         domain,

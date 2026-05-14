@@ -84,6 +84,16 @@ function parseOptions(value: string): ParsedOption[] {
     .filter((option) => option.letter && option.text);
 }
 
+function splitMcqPrompt(value: string) {
+  const normalized = normalizeInlineWhitespace(value);
+  const firstOption = normalized.search(/\sA\)\s/);
+  if (firstOption === -1) return { questionText: normalized, optionSource: '' };
+  return {
+    questionText: normalized.slice(0, firstOption).trim(),
+    optionSource: normalized.slice(firstOption).trim(),
+  };
+}
+
 function splitAnswerBlock(block: string) {
   const marker = /(?:^|\n)(Answer|How to answer):\s*/i.exec(block);
   if (!marker || marker.index === undefined) return { lead: block.trim(), answer: '' };
@@ -175,7 +185,8 @@ export function loadCuratedMarkdownQuestions(config: CuratedMarkdownConfig) {
     if (roundKey === 'faang') tags.push('faang');
 
     if (roundConfig.type === 'mcq') {
-      const options = parseOptions(lead);
+      const prompt = splitMcqPrompt(`${questionText} ${lead}`);
+      const options = parseOptions(prompt.optionSource);
       const answerLetter = answer.match(/^([A-D])\b/i)?.[1]?.toUpperCase() ?? '';
       const selectedOption = options.find((option) => option.letter === answerLetter)?.text;
       const explanation = answer.replace(/^([A-D])\s*(?:—|-)?\s*/i, '').trim();
@@ -186,7 +197,7 @@ export function loadCuratedMarkdownQuestions(config: CuratedMarkdownConfig) {
         topic,
         type: roundConfig.type,
         difficulty: roundConfig.difficulty,
-        questionText,
+        questionText: prompt.questionText || questionText,
         options: options.map((option) => option.text),
         correctAnswer: selectedOption ?? answer,
         explanation: explanation && explanation !== selectedOption ? explanation : '',

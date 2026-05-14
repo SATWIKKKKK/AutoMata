@@ -158,7 +158,7 @@ const ONBOARDING_COMPLETE_KEY = 'promptly_onboarding_complete';
 const PREP_WORKSPACE_EVENT = 'promptly-prep-workspace-change';
 
 export const DEFAULT_PREP_SELECTIONS: PrepSelections = {
-  domain: 'frontend',
+  domain: '',
   interviewType: 'internship',
   companyType: 'general',
   timeline: '7-day',
@@ -301,4 +301,12 @@ export function isOnboardingComplete() {
 
 export function markOnboardingComplete() {
   localStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
+}
+
+export function resetPrepWorkspaceForOnboarding() {
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(ONBOARDING_COMPLETE_KEY);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(PREP_WORKSPACE_EVENT));
+  }
 }

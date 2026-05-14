@@ -29,6 +29,9 @@ export default function Landing({ onViewChange }: LandingProps) {
             Repoid
           </button>
           <div className="flex items-center gap-3">
+            <button type="button" onClick={() => onViewChange('pricing')} className="hidden text-ui-label text-blueprint-muted transition-colors hover:text-primary sm:inline-flex">
+              Pricing
+            </button>
             <button type="button" onClick={() => onViewChange('auth')} className="text-ui-label text-primary transition-colors hover:text-blueprint-muted">
               Sign In
             </button>

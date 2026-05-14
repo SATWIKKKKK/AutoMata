@@ -55,6 +55,18 @@ export type StoredRoundAttempt = {
   results: RoundAttemptDetail[];
 };
 
+export type RoundFeedback = {
+  aiUnavailable?: boolean;
+  score: number;
+  feedback: string;
+  whatWorked: string;
+  whatWasMissed: string;
+  seniorEngineerWouldHaveSaid?: string;
+  spokenResponse?: string;
+  followUpQuestion?: string | null;
+  internalFlags?: string[];
+};
+
 type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string };
@@ -150,6 +162,20 @@ export async function submitRoundAttempt(attemptId: string, payload: {
   return { ok: true, data: result.data.attempt };
 }
 
+export async function requestRoundFeedback(attemptId: string, payload: {
+  questionId: string;
+  answer: string;
+  mode: 'scenario' | 'mock';
+  persona?: string;
+}): Promise<ApiResult<RoundFeedback>> {
+  const result = await requestJson<{ feedback: RoundFeedback }>(`/api/round-attempts/${encodeURIComponent(attemptId)}/feedback`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, data: result.data.feedback };
+}
+
 export async function fetchLatestRoundAttempt(roundType: string, domain?: string) {
   const params = new URLSearchParams();
   if (domain) params.set('domain', domain);
@@ -166,4 +192,10 @@ export async function fetchLatestRoundAttemptSummary(domain?: string) {
   const result = await requestJson<{ attempts: StoredRoundAttempt[] }>(`/api/round-attempts/latest-summary${suffix}`);
   if ('error' in result) return { ok: false, error: result.error };
   return { ok: true, data: result.data.attempts };
+}
+
+export async function fetchRoundFocusSummary(attemptId: string): Promise<ApiResult<Array<{ type: string; total: number }>>> {
+  const result = await requestJson<{ events: Array<{ type: string; total: number }> }>(`/api/rounds/${encodeURIComponent(attemptId)}/focus-summary`);
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, data: result.data.events };
 }

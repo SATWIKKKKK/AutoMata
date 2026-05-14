@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, Github } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { authenticateLocalAccount, persistSessionUser, registerLocalAccount } from '../lib/session';
 import { BackgroundRippleEffect } from '../components/ui/background-ripple-effect';
-import { getStoredPrepWorkspace } from '../lib/prep';
+import { resetPrepWorkspaceForOnboarding } from '../lib/prep';
 
 interface AuthProps {
   onAuthSuccess: () => void;
@@ -56,8 +56,8 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
           return;
         }
 
-        const domain = getStoredPrepWorkspace().selections.domain;
-        const result = await registerLocalAccount({ email, name: fullName, password, domain });
+        resetPrepWorkspaceForOnboarding();
+        const result = await registerLocalAccount({ email, name: fullName, password });
         if (!('error' in result)) {
           persistSessionUser(result.user);
           onAuthSuccess();

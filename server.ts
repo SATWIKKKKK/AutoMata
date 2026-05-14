@@ -12,6 +12,7 @@ import {
   createRoundAttempt,
   ensureQuestionBankSeeded,
   getLatestRoundAttempt,
+  getRoundAttemptById,
   listQuestions,
   listQuestionStats,
   submitRoundAttempt,
@@ -54,12 +55,30 @@ type DbUserRow = {
 
 type AuthedRequest = express.Request & {
   user?: DbUserRow;
+  rawBody?: Buffer;
 };
 
 type UserPreferencesRow = {
   sidebar_open: boolean | null;
   theme: string | null;
   domain: string | null;
+};
+
+type BillingPlan = 'free' | 'pro' | 'team';
+type BillingInterval = 'monthly' | 'annual';
+
+type SubscriptionRow = {
+  id: string;
+  user_id: string;
+  plan: BillingPlan;
+  status: string;
+  provider: string | null;
+  razorpay_customer_id: string | null;
+  razorpay_subscription_id: string | null;
+  razorpay_payment_id: string | null;
+  current_period_end: string | null;
+  billing_interval: BillingInterval | null;
+  seats: number | null;
 };
 
 type EmailOtpPurpose = 'email_change';
@@ -241,10 +260,76 @@ const DOMAIN_ALIASES = new Map<string, string>([
   ['testing', 'frontend'],
 ]);
 
+const BILLING_PLANS = ['free', 'pro', 'team'] as const;
+const BILLING_INTERVALS = ['monthly', 'annual'] as const;
+
+const PLAN_PRICING: Record<Exclude<BillingPlan, 'free'>, Record<BillingInterval, { amountPaise: number; displayPrice: string; label: string }>> = {
+  pro: {
+    monthly: { amountPaise: 99900, displayPrice: '₹999', label: 'Pro monthly' },
+    annual: { amountPaise: 849900, displayPrice: '₹8,499', label: 'Pro annual' },
+  },
+  team: {
+    monthly: { amountPaise: 249900, displayPrice: '₹2,499', label: 'Team monthly seat' },
+    annual: { amountPaise: 2518800, displayPrice: '₹25,188', label: 'Team annual seat' },
+  },
+};
+
+const PLAN_LIMITS: Record<BillingPlan, {
+  activeDomains: number | 'all';
+  questionsPerDay: number | 'unlimited';
+  practiceTrackModules: number | 'all';
+  mockInterviewsPerMonth: number | 'unlimited';
+  codingRoundsPerMonth: number | 'unlimited';
+  scenarioRounds: boolean | 'unlimited';
+  githubRepos: number | 'unlimited';
+  pdfExport: boolean;
+  teamFeatures: boolean;
+}> = {
+  free: {
+    activeDomains: 1,
+    questionsPerDay: 20,
+    practiceTrackModules: 2,
+    mockInterviewsPerMonth: 0,
+    codingRoundsPerMonth: 0,
+    scenarioRounds: false,
+    githubRepos: 1,
+    pdfExport: false,
+    teamFeatures: false,
+  },
+  pro: {
+    activeDomains: 'all',
+    questionsPerDay: 'unlimited',
+    practiceTrackModules: 'all',
+    mockInterviewsPerMonth: 5,
+    codingRoundsPerMonth: 10,
+    scenarioRounds: 'unlimited',
+    githubRepos: 5,
+    pdfExport: true,
+    teamFeatures: false,
+  },
+  team: {
+    activeDomains: 'all',
+    questionsPerDay: 'unlimited',
+    practiceTrackModules: 'all',
+    mockInterviewsPerMonth: 'unlimited',
+    codingRoundsPerMonth: 'unlimited',
+    scenarioRounds: 'unlimited',
+    githubRepos: 'unlimited',
+    pdfExport: true,
+    teamFeatures: true,
+  },
+};
+
 function normalizeDomain(value: unknown, fallback = 'frontend') {
   const requested = String(value ?? '').trim();
   const domain = DOMAIN_ALIASES.get(requested) ?? requested;
   return ALLOWED_DOMAINS.has(domain) ? domain : fallback;
+}
+
+function normalizeOptionalDomain(value: unknown) {
+  const requested = String(value ?? '').trim();
+  const domain = DOMAIN_ALIASES.get(requested) ?? requested;
+  return ALLOWED_DOMAINS.has(domain) ? domain : '';
 }
 
 function normalizeQuestionType(value: unknown): QuestionTypeParam | null {
@@ -631,6 +716,285 @@ function resolveModelConfig(modelOverride?: string): ModelConfig {
   }
 
   throw new Error('No compatible LLM provider is configured for prep analysis.');
+}
+
+function parseJsonArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+  if (typeof value === 'string') {
+    try {
+      return parseJsonArray(JSON.parse(value));
+    } catch {
+      return value.trim() ? [value.trim()] : [];
+    }
+  }
+  return [];
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parseJsonRecord(parsed);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function slugForKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'module';
+}
+
+function clampScore(value: unknown, fallback = 5) {
+  const score = Number(value);
+  if (!Number.isFinite(score)) return fallback;
+  return Math.min(10, Math.max(1, Math.round(score)));
+}
+
+function fallbackRoundFeedback(mode: 'scenario' | 'mock', answer: string) {
+  const words = answer.trim().split(/\s+/).filter(Boolean).length;
+  const score = words >= 90 ? 8 : words >= 45 ? 6 : 4;
+  if (mode === 'mock') {
+    return {
+      aiUnavailable: true,
+      score,
+      feedback: 'Saved locally because the AI evaluator was unavailable. The answer is strongest when it names the problem, decision, tradeoff, result, and validation signal.',
+      whatWorked: words >= 45 ? 'You gave enough substance to evaluate the answer.' : 'You started the answer with a clear direction.',
+      whatWasMissed: 'Add more concrete evidence, tradeoffs, and verification details.',
+      spokenResponse: words >= 45 ? 'That gives me the shape of your thinking. I would push you to be more specific about the signal that proved the decision worked.' : 'I need a more concrete example before I can judge the depth of that answer.',
+      followUpQuestion: 'What metric, user signal, or production symptom proved your decision was correct?',
+      internalFlags: ['fallback-evaluation'],
+    };
+  }
+  return {
+    aiUnavailable: true,
+    score,
+    feedback: 'Saved locally because the AI evaluator was unavailable. Strong scenario answers diagnose first, name the risk, then propose a bounded action.',
+    whatWorked: words >= 45 ? 'You responded with enough context to show a decision path.' : 'You identified an initial direction.',
+    whatWasMissed: 'Make the constraints, failure mode, and next verification step more explicit.',
+    seniorEngineerWouldHaveSaid: 'I would isolate the failing boundary, protect users from the current blast radius, ship the smallest reversible fix, then add a metric or test that catches the regression next time.',
+  };
+}
+
+function normalizeRoundFeedbackPayload(mode: 'scenario' | 'mock', payload: unknown) {
+  const source = parseJsonRecord(payload);
+  if (mode === 'mock') {
+    return {
+      aiUnavailable: Boolean(source.aiUnavailable),
+      score: clampScore(source.internalScore ?? source.score, 6),
+      feedback: String(source.feedback ?? source.spokenResponse ?? 'Response recorded.'),
+      whatWorked: String(source.whatWorked ?? source.strengthSignal ?? 'The answer had a usable starting point.'),
+      whatWasMissed: String(source.whatWasMissed ?? 'Add more concrete tradeoffs and validation details.'),
+      spokenResponse: String(source.spokenResponse ?? source.response ?? 'Thanks. I would like you to go one level deeper on the tradeoff.'),
+      followUpQuestion: source.followUpQuestion === null ? null : String(source.followUpQuestion ?? ''),
+      internalFlags: parseJsonArray(source.internalFlags ?? source.flags),
+    };
+  }
+  return {
+    aiUnavailable: Boolean(source.aiUnavailable),
+    score: clampScore(source.score, 6),
+    feedback: String(source.feedback ?? 'Scenario step recorded.'),
+    whatWorked: String(source.whatWorked ?? 'The answer identified a plausible next step.'),
+    whatWasMissed: String(source.whatWasMissed ?? 'Add clearer constraints, risks, and verification.'),
+    seniorEngineerWouldHaveSaid: String(source.seniorEngineerWouldHaveSaid ?? 'A senior answer would diagnose the boundary first, contain the risk, and validate the fix with a concrete signal.'),
+  };
+}
+
+async function getLatestRepoContext(userId: string) {
+  const row = await db.prepare(`
+    SELECT gr.repo_name, gr.detected_stack, gr.raw_analysis_json, rqs.project_summary
+      FROM github_repos gr
+      LEFT JOIN repo_question_sets rqs ON rqs.repo_id = gr.id
+     WHERE gr.user_id = ? AND gr.status = 'complete'
+     ORDER BY gr.scanned_at DESC
+     LIMIT 1
+  `).get<{ repo_name: string; detected_stack: unknown; raw_analysis_json: unknown; project_summary: string | null }>(userId);
+  if (!row) return 'none';
+  return JSON.stringify({
+    repoName: row.repo_name,
+    detectedStack: parseJsonArray(row.detected_stack).slice(0, 8),
+    summary: row.project_summary ?? 'Repository scan completed.',
+  });
+}
+
+async function checkAiRateLimit(userId: string, eventType: string, weight: number) {
+  const row = await db.prepare(`
+    SELECT COALESCE(SUM(weight), 0)::int AS total
+      FROM ai_rate_limit_events
+     WHERE user_id = ?
+       AND created_at >= NOW() - INTERVAL '60 minutes'
+  `).get<{ total: number }>(userId);
+  const current = Number(row?.total ?? 0);
+  if (current + weight > 60) {
+    const error = new Error("You're moving fast - slow down a bit, your results are still accurate.");
+    (error as Error & { statusCode?: number }).statusCode = 429;
+    throw error;
+  }
+  await db.prepare(`
+    INSERT INTO ai_rate_limit_events (id, user_id, event_type, weight)
+    VALUES (?, ?, ?, ?)
+  `).run(crypto.randomUUID(), userId, eventType, Math.max(1, Math.round(weight)));
+}
+
+async function queueAiRetryJob(userId: string, feature: string, attemptId: string, payload: Record<string, unknown>) {
+  await db.prepare(`
+    INSERT INTO ai_retry_jobs (id, user_id, feature, attempt_id, payload, status)
+    VALUES (?, ?, ?, ?, ?::jsonb, 'pending')
+  `).run(crypto.randomUUID(), userId, feature, attemptId, JSON.stringify(payload));
+}
+
+async function markAiRetryJobsFailed(userId: string, feature: string, attemptId: string, message: string) {
+  await db.prepare(`
+    UPDATE ai_retry_jobs
+       SET status = 'failed',
+           error_message = ?,
+           updated_at = NOW()
+     WHERE user_id = ?
+       AND feature = ?
+       AND attempt_id = ?
+       AND status = 'pending'
+  `).run(message.slice(0, 500), userId, feature, attemptId);
+}
+
+type TrackQuestionRow = {
+  id: string;
+  domain: string;
+  domain_label: string;
+  topic: string;
+  type: string;
+  difficulty: number;
+  question_text: string;
+  options: unknown;
+  correct_answer: string;
+  explanation: string;
+  code_snippet: string | null;
+  tags: unknown;
+  time_limit_minutes: number;
+};
+
+function mapTrackQuestion(row: TrackQuestionRow) {
+  return {
+    id: row.id,
+    domain: row.domain,
+    domainLabel: row.domain_label,
+    topic: row.topic,
+    type: row.type,
+    difficulty: Math.min(3, Math.max(1, Number(row.difficulty))),
+    questionText: row.question_text,
+    options: parseJsonArray(row.options),
+    correctAnswer: row.correct_answer,
+    explanation: row.explanation,
+    codeSnippet: row.code_snippet ?? undefined,
+    tags: parseJsonArray(row.tags),
+    timeLimitMinutes: Number(row.time_limit_minutes),
+  };
+}
+
+async function loadTrack(trackId: string, userId: string) {
+  const track = await db.prepare(`
+    SELECT id, user_id, domain, current_module_index, completed_module_ids, started_at, last_active_at
+      FROM practice_tracks
+     WHERE id = ? AND user_id = ?
+  `).get<{
+    id: string;
+    domain: string;
+    current_module_index: number;
+    completed_module_ids: unknown;
+    started_at: string;
+    last_active_at: string;
+  }>(trackId, userId);
+  if (!track) return null;
+
+  const modules = await db.query<{
+    id: string;
+    module_key: string;
+    module_title: string;
+    module_index: number;
+    status: string;
+    score: number | null;
+    question_ids: unknown;
+  }>(`
+    SELECT id, module_key, module_title, module_index, status, score, question_ids
+      FROM track_modules
+     WHERE track_id = $1
+     ORDER BY module_index ASC
+  `, [trackId]);
+
+  const questionIds = Array.from(new Set(modules.flatMap((module) => parseJsonArray(module.question_ids))));
+  const questionRows = questionIds.length
+    ? await db.query<TrackQuestionRow>(`
+        SELECT id, domain, domain_label, topic, type, difficulty, question_text, options, correct_answer, explanation, code_snippet, tags, time_limit_minutes
+          FROM questions
+         WHERE id = ANY($1::text[])
+      `, [questionIds])
+    : [];
+  const questionsById = new Map(questionRows.map((row) => [row.id, mapTrackQuestion(row)]));
+
+  return {
+    id: track.id,
+    domain: track.domain,
+    currentModuleIndex: Number(track.current_module_index ?? 0),
+    completedModuleIds: parseJsonArray(track.completed_module_ids),
+    startedAt: track.started_at,
+    lastActiveAt: track.last_active_at,
+    modules: modules.map((module) => ({
+      id: module.id,
+      moduleKey: module.module_key,
+      moduleTitle: module.module_title,
+      moduleIndex: Number(module.module_index),
+      status: module.status,
+      score: module.score,
+      questions: parseJsonArray(module.question_ids).map((id) => questionsById.get(id)).filter(Boolean),
+    })),
+  };
+}
+
+async function seedTrackModules(trackId: string, domain: string, userId: string) {
+  const existing = await db.prepare('SELECT COUNT(*)::int AS count FROM track_modules WHERE track_id = ?').get<{ count: number }>(trackId);
+  if (Number(existing?.count ?? 0) > 0) return;
+
+  const topics = await db.query<{ topic: string; question_ids: unknown }>(`
+    SELECT topic, jsonb_agg(id ORDER BY type, difficulty, id) AS question_ids
+      FROM (
+        SELECT id, topic, type, difficulty,
+               ROW_NUMBER() OVER (PARTITION BY topic ORDER BY
+                 md5(id || $2),
+                 CASE type
+                   WHEN 'mcq' THEN 1
+                   WHEN 'fill_blank' THEN 2
+                   WHEN 'fundamentals' THEN 3
+                   ELSE 4
+                 END,
+                 difficulty,
+                 id
+               ) AS rn
+          FROM questions
+         WHERE domain = $1
+           AND type IN ('mcq', 'fill_blank', 'fundamentals', 'scenario')
+      ) ranked
+     WHERE rn <= 6
+     GROUP BY topic
+     ORDER BY MIN(difficulty), topic
+     LIMIT 6
+  `, [domain, userId]);
+
+  for (const [index, topic] of topics.entries()) {
+    await db.prepare(`
+      INSERT INTO track_modules (id, track_id, module_key, module_title, module_index, status, question_ids)
+      VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)
+      ON CONFLICT (track_id, module_key) DO NOTHING
+    `).run(
+      crypto.randomUUID(),
+      trackId,
+      slugForKey(topic.topic),
+      topic.topic.replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      index,
+      index === 0 ? 'active' : 'locked',
+      JSON.stringify(parseJsonArray(topic.question_ids).slice(0, 6)),
+    );
+  }
 }
 
 async function callStructuredModel<T>(
@@ -2158,7 +2522,7 @@ async function findOrCreateOAuthUser(provider: 'google' | 'github', providerAcco
   await db.prepare('INSERT INTO users (id, email, name, password_hash, auth_provider, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())')
     .run(userId, normalizedEmail, name || normalizedEmail.split('@')[0], hashPassword(crypto.randomUUID()), provider, 1);
     await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
-      .run(crypto.randomUUID(), userId, 0, 'light', 'frontend');
+      .run(crypto.randomUUID(), userId, 0, 'light', '');
   await db.prepare('INSERT INTO oauth_accounts (id, user_id, provider, provider_account_id, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
     .run(crypto.randomUUID(), userId, provider, providerAccountId, normalizedEmail);
   user = await db.prepare('SELECT id, email, name, password_hash, auth_provider, email_verified, created_at, updated_at FROM users WHERE id = ?')
@@ -2228,7 +2592,188 @@ async function requireUser(request: AuthedRequest, response: express.Response, n
 
 async function getUserSelectedDomain(userId: string) {
   const row = await db.prepare('SELECT domain FROM user_preferences WHERE user_id = ?').get<{ domain: string | null }>(userId);
-  return normalizeDomain(row?.domain);
+  return normalizeOptionalDomain(row?.domain);
+}
+
+function normalizeBillingPlan(value: unknown): BillingPlan {
+  const plan = String(value ?? '').trim().toLowerCase();
+  return (BILLING_PLANS as readonly string[]).includes(plan) ? (plan as BillingPlan) : 'free';
+}
+
+function normalizeBillingInterval(value: unknown): BillingInterval {
+  const interval = String(value ?? '').trim().toLowerCase();
+  return (BILLING_INTERVALS as readonly string[]).includes(interval) ? (interval as BillingInterval) : 'monthly';
+}
+
+function getPeriodEnd(interval: BillingInterval) {
+  const date = new Date();
+  if (interval === 'annual') {
+    date.setFullYear(date.getFullYear() + 1);
+  } else {
+    date.setMonth(date.getMonth() + 1);
+  }
+  return date.toISOString();
+}
+
+function toSubscriptionPayload(row: SubscriptionRow | null) {
+  const plan = normalizeBillingPlan(row?.plan);
+  const status = row?.status ?? 'active';
+  return {
+    plan,
+    status,
+    provider: row?.provider ?? 'manual',
+    billingInterval: row?.billing_interval ?? 'monthly',
+    seats: Number(row?.seats ?? 1),
+    currentPeriodEnd: row?.current_period_end ?? null,
+    limits: PLAN_LIMITS[plan],
+  };
+}
+
+async function getUserSubscription(userId: string) {
+  const row = await db.prepare(`
+    SELECT id, user_id, plan, status, provider, razorpay_customer_id, razorpay_subscription_id,
+           razorpay_payment_id, current_period_end, billing_interval, seats
+      FROM subscriptions
+     WHERE user_id = ?
+  `).get<SubscriptionRow>(userId);
+
+  if (!row) return null;
+  const expired = row.current_period_end ? new Date(row.current_period_end).getTime() < Date.now() : false;
+  if (expired && row.plan !== 'free') {
+    await db.prepare('UPDATE subscriptions SET plan = ?, status = ?, updated_at = NOW() WHERE user_id = ?').run('free', 'expired', userId);
+    return null;
+  }
+  return row;
+}
+
+async function getEffectivePlan(userId: string): Promise<BillingPlan> {
+  const subscription = await getUserSubscription(userId);
+  if (!subscription || subscription.status !== 'active') return 'free';
+  return normalizeBillingPlan(subscription.plan);
+}
+
+async function upsertSubscription(params: {
+  userId: string;
+  plan: BillingPlan;
+  status: string;
+  provider: string;
+  billingInterval: BillingInterval;
+  seats: number;
+  currentPeriodEnd: string | null;
+  razorpayPaymentId?: string | null;
+}) {
+  await db.prepare(`
+    INSERT INTO subscriptions (
+      id, user_id, plan, status, provider, billing_interval, seats, current_period_end,
+      razorpay_payment_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    ON CONFLICT (user_id) DO UPDATE SET
+      plan = EXCLUDED.plan,
+      status = EXCLUDED.status,
+      provider = EXCLUDED.provider,
+      billing_interval = EXCLUDED.billing_interval,
+      seats = EXCLUDED.seats,
+      current_period_end = EXCLUDED.current_period_end,
+      razorpay_payment_id = EXCLUDED.razorpay_payment_id,
+      updated_at = NOW()
+  `).run(
+    crypto.randomUUID(),
+    params.userId,
+    params.plan,
+    params.status,
+    params.provider,
+    params.billingInterval,
+    params.seats,
+    params.currentPeriodEnd,
+    params.razorpayPaymentId ?? null,
+  );
+}
+
+async function getMonthlyRoundUsage(userId: string, roundType: string) {
+  const row = await db.prepare(`
+    SELECT COUNT(*)::int AS total
+      FROM round_attempts
+     WHERE user_id = ?
+       AND round_type = ?
+       AND created_at >= date_trunc('month', NOW())
+  `).get<{ total: number }>(userId, roundType);
+  return Number(row?.total ?? 0);
+}
+
+async function getGithubRepoUsage(userId: string) {
+  const row = await db.prepare(`
+    SELECT COUNT(*)::int AS total
+      FROM github_repos
+     WHERE user_id = ?
+  `).get<{ total: number }>(userId);
+  return Number(row?.total ?? 0);
+}
+
+async function getEntitlement(userId: string, feature: string) {
+  const plan = await getEffectivePlan(userId);
+  const limits = PLAN_LIMITS[plan];
+  const usage: Record<string, number> = {};
+  let hasAccess = true;
+  let reason: string | null = null;
+  let suggestedPlan: BillingPlan | null = null;
+
+  if (feature === 'mock-interview') {
+    usage.mockInterviewsThisMonth = await getMonthlyRoundUsage(userId, 'mock-interview');
+    const limit = limits.mockInterviewsPerMonth;
+    hasAccess = limit === 'unlimited' || usage.mockInterviewsThisMonth < limit;
+    reason = hasAccess ? null : 'Mock interviews are not included in your current plan or your monthly limit is used.';
+    suggestedPlan = plan === 'free' ? 'pro' : 'team';
+  } else if (feature === 'coding-round') {
+    usage.codingRoundsThisMonth = await getMonthlyRoundUsage(userId, 'coding-round');
+    const limit = limits.codingRoundsPerMonth;
+    hasAccess = limit === 'unlimited' || usage.codingRoundsThisMonth < limit;
+    reason = hasAccess ? null : 'Coding rounds are not included in your current plan or your monthly limit is used.';
+    suggestedPlan = plan === 'free' ? 'pro' : 'team';
+  } else if (feature === 'scenario-round') {
+    hasAccess = limits.scenarioRounds === 'unlimited';
+    reason = hasAccess ? null : 'Scenario rounds are available on Pro and Team.';
+    suggestedPlan = 'pro';
+  } else if (feature === 'github-scan') {
+    usage.githubRepos = await getGithubRepoUsage(userId);
+    const limit = limits.githubRepos;
+    hasAccess = limit === 'unlimited' || usage.githubRepos < limit;
+    reason = hasAccess ? null : 'You have reached the GitHub repository scan limit for your plan.';
+    suggestedPlan = plan === 'free' ? 'pro' : 'team';
+  } else if (feature === 'pdf-export') {
+    hasAccess = limits.pdfExport;
+    reason = hasAccess ? null : 'PDF report export is available on Pro and Team.';
+    suggestedPlan = 'pro';
+  }
+
+  return {
+    hasAccess,
+    reason,
+    upgradeRequired: !hasAccess,
+    feature,
+    currentPlan: plan,
+    suggestedPlan,
+    usage,
+    limits,
+    upgradeMessage: hasAccess ? null : `Upgrade to ${suggestedPlan === 'team' ? 'Team' : 'Pro'} to use ${feature.replace(/-/g, ' ')}.`,
+  };
+}
+
+function requireRazorpayCredentials() {
+  const keyId = process.env.RAZORPAY_KEY_ID?.trim();
+  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  if (!keyId || !keySecret) {
+    throw new Error('Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.');
+  }
+  return { keyId, keySecret };
+}
+
+function verifyRazorpaySignature(orderId: string, paymentId: string, signature: string, keySecret: string) {
+  const expected = crypto
+    .createHmac('sha256', keySecret)
+    .update(`${orderId}|${paymentId}`)
+    .digest('hex');
+  if (expected.length !== signature.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 }
 
 export async function createApp(options: { listen?: boolean } = {}) {
@@ -2236,7 +2781,11 @@ export async function createApp(options: { listen?: boolean } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(cors({ origin: true, credentials: true }));
-  app.use(express.json());
+  app.use(express.json({
+    verify: (request, _response, buffer) => {
+      (request as AuthedRequest).rawBody = Buffer.from(buffer);
+    },
+  }));
 
   if (process.env.NODE_ENV !== 'production' || process.env.SEED_QUESTIONS_ON_START === 'true') {
     await ensureQuestionBankSeeded();
@@ -2256,12 +2805,453 @@ export async function createApp(options: { listen?: boolean } = {}) {
     });
   });
 
+  app.get('/api/billing/plans', (_request, response) => {
+    response.json({
+      currency: 'INR',
+      plans: {
+        free: {
+          plan: 'free',
+          name: 'Free',
+          monthly: { amountPaise: 0, displayPrice: '₹0' },
+          annual: { amountPaise: 0, displayPrice: '₹0' },
+          limits: PLAN_LIMITS.free,
+        },
+        pro: {
+          plan: 'pro',
+          name: 'Pro',
+          monthly: PLAN_PRICING.pro.monthly,
+          annual: PLAN_PRICING.pro.annual,
+          limits: PLAN_LIMITS.pro,
+        },
+        team: {
+          plan: 'team',
+          name: 'Team',
+          monthly: PLAN_PRICING.team.monthly,
+          annual: PLAN_PRICING.team.annual,
+          minSeats: 3,
+          limits: PLAN_LIMITS.team,
+        },
+      },
+    });
+  });
+
+  app.get('/api/billing/subscription', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const subscription = await getUserSubscription(user.id);
+    response.json({ subscription: toSubscriptionPayload(subscription) });
+  });
+
+  app.get('/api/billing/entitlement', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const feature = String(request.query.feature ?? '').trim();
+    if (!feature) {
+      response.status(400).json({ error: 'feature is required.' });
+      return;
+    }
+    response.json({ entitlement: await getEntitlement(user.id, feature) });
+  });
+
+  app.post('/api/billing/create-order', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const plan = normalizeBillingPlan(request.body?.plan);
+    const billingInterval = normalizeBillingInterval(request.body?.billingInterval);
+    const seats = plan === 'team' ? Math.max(3, Number(request.body?.seats ?? 3)) : 1;
+
+    if (plan === 'free') {
+      await upsertSubscription({
+        userId: user.id,
+        plan: 'free',
+        status: 'active',
+        provider: 'manual',
+        billingInterval: 'monthly',
+        seats: 1,
+        currentPeriodEnd: null,
+      });
+      response.json({ success: true, subscription: toSubscriptionPayload(await getUserSubscription(user.id)) });
+      return;
+    }
+
+    try {
+      const { keyId, keySecret } = requireRazorpayCredentials();
+      const unitPricing = PLAN_PRICING[plan][billingInterval];
+      const amountPaise = unitPricing.amountPaise * seats;
+      const receipt = `repoid_${plan}_${Date.now()}`.slice(0, 40);
+      const razorpayResponse = await fetch('https://api.razorpay.com/v1/orders', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amount: amountPaise,
+          currency: 'INR',
+          receipt,
+          notes: {
+            userId: user.id,
+            email: user.email,
+            plan,
+            billingInterval,
+            seats: String(seats),
+          },
+        }),
+      });
+      const order = await razorpayResponse.json().catch(() => ({})) as { id?: string; error?: { description?: string } };
+      if (!razorpayResponse.ok || !order.id) {
+        throw new Error(order.error?.description ?? 'Unable to create Razorpay order.');
+      }
+
+      await db.prepare(`
+        INSERT INTO billing_orders (
+          id, user_id, razorpay_order_id, plan, billing_interval, seats, amount_paise,
+          currency, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      `).run(crypto.randomUUID(), user.id, order.id, plan, billingInterval, seats, amountPaise, 'INR', 'created');
+
+      response.status(201).json({
+        keyId,
+        orderId: order.id,
+        amountPaise,
+        currency: 'INR',
+        plan,
+        billingInterval,
+        seats,
+        name: 'Repoid',
+        description: unitPricing.label,
+        prefill: {
+          name: user.name,
+          email: user.email,
+        },
+      });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to create billing order.' });
+    }
+  });
+
+  app.post('/api/billing/verify', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const orderId = String(request.body?.razorpay_order_id ?? '').trim();
+    const paymentId = String(request.body?.razorpay_payment_id ?? '').trim();
+    const signature = String(request.body?.razorpay_signature ?? '').trim();
+
+    if (!orderId || !paymentId || !signature) {
+      response.status(400).json({ error: 'Razorpay order id, payment id, and signature are required.' });
+      return;
+    }
+
+    try {
+      const { keySecret } = requireRazorpayCredentials();
+      if (!verifyRazorpaySignature(orderId, paymentId, signature, keySecret)) {
+        response.status(400).json({ error: 'Razorpay signature verification failed.' });
+        return;
+      }
+
+      const order = await db.prepare(`
+        SELECT plan, billing_interval, seats, status
+          FROM billing_orders
+         WHERE user_id = ? AND razorpay_order_id = ?
+      `).get<{ plan: BillingPlan; billing_interval: BillingInterval; seats: number; status: string }>(user.id, orderId);
+
+      if (!order) {
+        response.status(404).json({ error: 'Billing order not found.' });
+        return;
+      }
+
+      const plan = normalizeBillingPlan(order.plan);
+      const billingInterval = normalizeBillingInterval(order.billing_interval);
+      const seats = Math.max(plan === 'team' ? 3 : 1, Number(order.seats ?? 1));
+
+      await db.prepare(`
+        UPDATE billing_orders
+           SET status = ?, razorpay_payment_id = ?, verified_at = NOW()
+         WHERE user_id = ? AND razorpay_order_id = ?
+      `).run('paid', paymentId, user.id, orderId);
+
+      await upsertSubscription({
+        userId: user.id,
+        plan,
+        status: 'active',
+        provider: 'razorpay',
+        billingInterval,
+        seats,
+        currentPeriodEnd: getPeriodEnd(billingInterval),
+        razorpayPaymentId: paymentId,
+      });
+
+      response.json({ success: true, subscription: toSubscriptionPayload(await getUserSubscription(user.id)) });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to verify payment.' });
+    }
+  });
+
+  app.post('/api/webhooks/razorpay', async (request, response) => {
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
+    if (!webhookSecret) {
+      response.status(501).json({ error: 'Razorpay webhook secret is not configured.' });
+      return;
+    }
+
+    const signature = String(request.headers['x-razorpay-signature'] ?? '');
+    const rawBody = (request as AuthedRequest).rawBody;
+    if (!signature || !rawBody) {
+      response.status(400).json({ error: 'Missing Razorpay webhook signature.' });
+      return;
+    }
+
+    const expected = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+    if (expected.length !== signature.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
+      response.status(400).json({ error: 'Invalid Razorpay webhook signature.' });
+      return;
+    }
+
+    response.json({ received: true });
+  });
+
   app.get('/api/questions/stats', requireUser, async (_request, response) => {
     try {
       const stats = await listQuestionStats();
       response.json({ stats });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load question stats.' });
+    }
+  });
+
+  app.get('/api/tracks/active', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const rows = await db.query<{ id: string }>(
+        'SELECT id FROM practice_tracks WHERE user_id = $1 ORDER BY last_active_at DESC',
+        [user.id],
+      );
+      const tracks = (await Promise.all(rows.map((row) => loadTrack(row.id, user.id)))).filter(Boolean);
+      response.json({ tracks });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load active tracks.' });
+    }
+  });
+
+  app.post('/api/tracks/start', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const selectedDomain = await getUserSelectedDomain(user.id);
+    if (!selectedDomain) {
+      response.status(400).json({ error: 'Choose your interview domain in onboarding before starting a practice track.' });
+      return;
+    }
+    const domain = normalizeDomain(request.body?.domain, selectedDomain);
+    if (domain !== selectedDomain) {
+      response.status(400).json({ error: 'Practice tracks must use your selected domain. Change it in Settings first.' });
+      return;
+    }
+
+    try {
+      let track = await db.prepare('SELECT id FROM practice_tracks WHERE user_id = ? AND domain = ?').get<{ id: string }>(user.id, domain);
+      if (!track) {
+        const trackId = crypto.randomUUID();
+        await db.prepare(`
+          INSERT INTO practice_tracks (id, user_id, domain, current_module_index, completed_module_ids)
+          VALUES (?, ?, ?, 0, '[]'::jsonb)
+        `).run(trackId, user.id, domain);
+        track = { id: trackId };
+      } else {
+        await db.prepare('UPDATE practice_tracks SET last_active_at = NOW(), updated_at = NOW() WHERE id = ?').run(track.id);
+      }
+
+      await seedTrackModules(track.id, domain, user.id);
+      const payload = await loadTrack(track.id, user.id);
+      response.status(201).json({ track: payload });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to start practice track.' });
+    }
+  });
+
+  app.get('/api/tracks/:trackId', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const trackId = String(request.params.trackId ?? '').trim();
+      const track = await loadTrack(trackId, user.id);
+      if (!track) {
+        response.status(404).json({ error: 'Practice track not found.' });
+        return;
+      }
+      response.json({ track });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load practice track.' });
+    }
+  });
+
+  app.get('/api/tracks/:trackId/modules/:moduleKey/questions', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const trackId = String(request.params.trackId ?? '').trim();
+      const moduleKey = String(request.params.moduleKey ?? '').trim();
+      const track = await loadTrack(trackId, user.id);
+      const module = track?.modules.find((item) => item.moduleKey === moduleKey);
+      if (!track || !module) {
+        response.status(404).json({ error: 'Track module not found.' });
+        return;
+      }
+      response.json({ questions: module.questions, module });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load module questions.' });
+    }
+  });
+
+  app.post('/api/tracks/:trackId/modules/:moduleKey/answers', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const trackId = String(request.params.trackId ?? '').trim();
+    const moduleKey = String(request.params.moduleKey ?? '').trim();
+    const questionId = String(request.body?.questionId ?? '').trim();
+    const answer = String(request.body?.answer ?? '').trim();
+    if (!questionId || !answer) {
+      response.status(400).json({ error: 'questionId and answer are required.' });
+      return;
+    }
+
+    try {
+      const track = await loadTrack(trackId, user.id);
+      const module = track?.modules.find((item) => item.moduleKey === moduleKey);
+      const question = module?.questions.find((item) => item.id === questionId);
+      if (!track || !module || !question) {
+        response.status(404).json({ error: 'Track question not found.' });
+        return;
+      }
+      let evaluation = {
+        aiUnavailable: true,
+        score: Math.min(10, Math.max(1, Math.round(answer.split(/\s+/).filter(Boolean).length / 12))),
+        verdict: answer.length > 120 ? 'adequate' : 'weak',
+        whatTheyGotRight: 'Your answer was saved and includes a usable starting point.',
+        whatIsMissing: 'Add more concrete implementation details, tradeoffs, and validation signals.',
+        improvedAnswer: question.correctAnswer,
+        followUpQuestion: `How would you verify this in a ${question.domainLabel} project?`,
+      };
+      try {
+        await checkAiRateLimit(user.id, 'practice-answer-evaluation', 1);
+        const repoContext = await getLatestRepoContext(user.id);
+        const ai = await callStructuredModel(
+          `Senior ${question.domainLabel} engineer. Evaluate the candidate answer. Fair and specific. Return only valid JSON.`,
+          JSON.stringify({
+            repoContext,
+            question: question.questionText,
+            expectedDepth: question.difficulty === 3 ? 'deep' : question.difficulty === 2 ? 'medium' : 'surface',
+            userAnswer: answer,
+            schema: {
+              score: 'number 1-10',
+              verdict: 'strong|adequate|weak',
+              whatTheyGotRight: 'string',
+              whatIsMissing: 'string',
+              improvedAnswer: 'string',
+              followUpQuestion: 'string',
+            },
+          }),
+          (payload) => {
+            const source = parseJsonRecord(payload);
+            return {
+              aiUnavailable: false,
+              score: clampScore(source.score, 5),
+              verdict: ['strong', 'adequate', 'weak'].includes(String(source.verdict)) ? String(source.verdict) : 'adequate',
+              whatTheyGotRight: String(source.whatTheyGotRight ?? 'You identified part of the expected idea.'),
+              whatIsMissing: String(source.whatIsMissing ?? 'Add more specificity and validation detail.'),
+              improvedAnswer: String(source.improvedAnswer ?? question.correctAnswer),
+              followUpQuestion: String(source.followUpQuestion ?? ''),
+            };
+          },
+          { maxTokens: 400, timeoutMs: 25000, model: process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat', temperature: 0.2 },
+        );
+        evaluation = ai.result;
+      } catch (error) {
+        if ((error as Error & { statusCode?: number }).statusCode === 429) {
+          response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
+          return;
+        }
+        await queueAiRetryJob(user.id, 'practice-answer', trackId, { moduleKey, questionId, answer });
+        await markAiRetryJobsFailed(user.id, 'practice-answer', trackId, error instanceof Error ? error.message : 'Practice answer evaluation failed after fallback.');
+      }
+
+      const payload = { moduleKey, questionId, answer, evaluation };
+      await db.prepare(`
+        INSERT INTO round_drafts (id, user_id, attempt_id, feature, draft_payload, saved_at, created_at, updated_at)
+        VALUES (?, ?, ?, 'practice-answer', ?::jsonb, NOW(), NOW(), NOW())
+        ON CONFLICT (user_id, attempt_id, feature)
+        DO UPDATE SET draft_payload = EXCLUDED.draft_payload, saved_at = NOW(), updated_at = NOW()
+      `).run(crypto.randomUUID(), user.id, `${trackId}:${moduleKey}:${questionId}`, JSON.stringify(payload));
+
+      response.json({ evaluation });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to evaluate answer.' });
+    }
+  });
+
+  app.post('/api/tracks/:trackId/modules/:moduleKey/complete', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const trackId = String(request.params.trackId ?? '').trim();
+    const moduleKey = String(request.params.moduleKey ?? '').trim();
+    const score = Math.min(100, Math.max(0, Math.round(Number(request.body?.score ?? 0))));
+
+    try {
+      const track = await loadTrack(trackId, user.id);
+      if (!track) {
+        response.status(404).json({ error: 'Practice track not found.' });
+        return;
+      }
+      const module = track.modules.find((item) => item.moduleKey === moduleKey);
+      if (!module) {
+        response.status(404).json({ error: 'Track module not found.' });
+        return;
+      }
+      if (module.status === 'locked') {
+        response.status(409).json({ error: 'This module is still locked.' });
+        return;
+      }
+
+      await db.prepare(`
+        UPDATE track_modules
+           SET status = 'done', score = ?, updated_at = NOW()
+         WHERE track_id = ? AND module_key = ?
+      `).run(score, trackId, moduleKey);
+
+      const completedModuleIds = Array.from(new Set([...track.completedModuleIds, moduleKey]));
+      let nextIndex = module.moduleIndex + 1;
+      if (score < 60) {
+        const remedialKey = `remedial-${moduleKey}`;
+        const hasRemedial = track.modules.some((item) => item.moduleKey === remedialKey);
+        if (!hasRemedial) {
+          await db.prepare(`
+            UPDATE track_modules
+               SET module_index = module_index + 1
+             WHERE track_id = ? AND module_index > ?
+          `).run(trackId, module.moduleIndex);
+          await db.prepare(`
+            INSERT INTO track_modules (id, track_id, module_key, module_title, module_index, status, question_ids)
+            VALUES (?, ?, ?, ?, ?, 'active', ?::jsonb)
+          `).run(
+            crypto.randomUUID(),
+            trackId,
+            remedialKey,
+            `Remedial: ${module.moduleTitle}`,
+            module.moduleIndex + 1,
+            JSON.stringify(module.questions.map((question) => question.id).slice(0, 6)),
+          );
+        }
+        nextIndex = module.moduleIndex + 1;
+      }
+
+      await db.prepare(`
+        UPDATE track_modules
+           SET status = 'active', updated_at = NOW()
+         WHERE track_id = ? AND module_index = ? AND status = 'locked'
+      `).run(trackId, nextIndex);
+
+      await db.prepare(`
+        UPDATE practice_tracks
+           SET current_module_index = ?,
+               completed_module_ids = ?::jsonb,
+               last_active_at = NOW(),
+               updated_at = NOW()
+         WHERE id = ? AND user_id = ?
+      `).run(nextIndex, JSON.stringify(completedModuleIds), trackId, user.id);
+
+      response.json({ track: await loadTrack(trackId, user.id) });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to complete module.' });
     }
   });
 
@@ -2295,11 +3285,240 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.get('/api/round-drafts/:feature/:attemptId', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const feature = String(request.params.feature ?? '').trim();
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const row = await db.prepare(`
+        SELECT draft_payload, saved_at
+          FROM round_drafts
+         WHERE user_id = ? AND feature = ? AND attempt_id = ?
+      `).get<{ draft_payload: unknown; saved_at: string }>(user.id, feature, attemptId);
+      response.json({ draft: row ? { payload: parseJsonRecord(row.draft_payload), savedAt: row.saved_at } : null });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load draft.' });
+    }
+  });
+
+  app.post('/api/round-drafts/:feature/:attemptId', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const feature = String(request.params.feature ?? '').trim();
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const payload = request.body?.payload && typeof request.body.payload === 'object' ? request.body.payload : {};
+      await db.prepare(`
+        INSERT INTO round_drafts (id, user_id, attempt_id, feature, draft_payload, saved_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?::jsonb, NOW(), NOW(), NOW())
+        ON CONFLICT (user_id, attempt_id, feature)
+        DO UPDATE SET draft_payload = EXCLUDED.draft_payload, saved_at = NOW(), updated_at = NOW()
+      `).run(crypto.randomUUID(), user.id, attemptId, feature, JSON.stringify(payload));
+      await db.prepare('UPDATE round_attempts SET last_saved_at = NOW() WHERE id = ? AND user_id = ?').run(attemptId, user.id);
+      response.json({ success: true, savedAt: new Date().toISOString() });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to save draft.' });
+    }
+  });
+
+  app.post('/api/rounds/:attemptId/focus-event', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const feature = String(request.body?.feature ?? 'round').trim();
+      const eventType = String(request.body?.eventType ?? 'unknown').trim();
+      const detail = request.body?.detail && typeof request.body.detail === 'object' ? request.body.detail : {};
+      await db.prepare(`
+        INSERT INTO round_focus_events (id, user_id, attempt_id, feature, event_type, detail)
+        VALUES (?, ?, ?, ?, ?, ?::jsonb)
+      `).run(crypto.randomUUID(), user.id, attemptId, feature, eventType, JSON.stringify(detail));
+      response.json({ success: true });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to save focus event.' });
+    }
+  });
+
+  app.post('/api/rounds/:attemptId/abandon', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      await db.prepare(`
+        UPDATE round_attempts
+           SET status = 'abandoned', updated_at = NOW(), last_saved_at = NOW()
+         WHERE id = ? AND user_id = ? AND status = 'started'
+      `).run(attemptId, user.id);
+      await db.prepare(`
+        INSERT INTO round_focus_events (id, user_id, attempt_id, feature, event_type, detail)
+        VALUES (?, ?, ?, ?, 'abandoned', ?::jsonb)
+      `).run(crypto.randomUUID(), user.id, attemptId, String(request.body?.feature ?? 'round'), JSON.stringify({ reason: request.body?.reason ?? 'user_left' }));
+      response.json({ success: true });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to abandon round.' });
+    }
+  });
+
+  app.get('/api/scenarios', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const domain = normalizeDomain(request.query.domain, selectedDomain);
+      const result = await listQuestions({ domain, type: 'scenario', limit: 12, offset: 0 });
+      response.json({
+        scenarios: result.questions.map((question) => ({
+          id: question.id,
+          domain: question.domain,
+          title: question.topic,
+          context: question.questionText,
+          level: question.difficulty === 3 ? 'senior' : question.difficulty === 2 ? 'mid' : 'junior',
+          type: question.tags.find((tag) => tag.startsWith('round:'))?.replace('round:', '') || 'scenario',
+          estimatedMinutes: question.timeLimitMinutes,
+        })),
+      });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load scenarios.' });
+    }
+  });
+
+  app.post('/api/scenarios/:scenarioId/start', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    try {
+      const entitlement = await getEntitlement(user.id, 'scenario-round');
+      if (!entitlement.hasAccess) {
+        response.status(403).json({ error: entitlement.upgradeMessage ?? 'Upgrade required.', ...entitlement });
+        return;
+      }
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const domain = normalizeDomain(request.body?.domain, selectedDomain);
+      const attempt = await createRoundAttempt({
+        userId: user.id,
+        roundType: 'scenario-round',
+        questionType: 'scenario',
+        domain,
+        limit: Number(request.body?.limit ?? 5),
+        durationMinutes: Number(request.body?.durationMinutes ?? 30),
+      });
+      response.status(201).json({ attempt });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to start scenario.' });
+    }
+  });
+
+  app.get('/api/coding/problems', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const domain = normalizeDomain(request.query.domain, selectedDomain);
+      const result = await listQuestions({ domain, type: 'coding', limit: 18, offset: 0 });
+      response.json({
+        problems: result.questions.map((question) => ({
+          id: question.id,
+          domain: question.domain,
+          title: question.topic,
+          description: question.questionText,
+          context: question.explanation,
+          starterCode: question.codeSnippet ?? question.correctAnswer,
+          language: domain === 'data-science' || domain === 'ai-ml' ? 'python' : domain === 'data-analytics' ? 'sql' : 'typescript',
+          difficulty: question.difficulty === 3 ? 'hard' : question.difficulty === 2 ? 'medium' : 'easy',
+          category: question.topic,
+          evaluationCriteria: ['Correctness', 'Code quality', 'Failure handling', 'Domain best practices'],
+          hints: [question.explanation],
+        })),
+      });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load coding problems.' });
+    }
+  });
+
+  app.post('/api/mock/start', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    try {
+      const entitlement = await getEntitlement(user.id, 'mock-interview');
+      if (!entitlement.hasAccess) {
+        response.status(403).json({ error: entitlement.upgradeMessage ?? 'Upgrade required.', ...entitlement });
+        return;
+      }
+      await checkAiRateLimit(user.id, 'mock-question-generation', 3);
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const requestedDomain = normalizeOptionalDomain(request.body?.domain);
+      if (!selectedDomain || !requestedDomain || requestedDomain !== selectedDomain) {
+        response.status(400).json({ error: 'Choose a valid mock interview domain before starting.', retryable: true });
+        return;
+      }
+      const domain = requestedDomain;
+      const timeout = new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('timeout')), 10000));
+      const attemptPromise = createRoundAttempt({
+        userId: user.id,
+        roundType: 'mock-interview',
+        questionType: 'mock',
+        domain,
+        limit: 8,
+        durationMinutes: 35,
+      });
+      const attempt = await Promise.race([attemptPromise, timeout]);
+      response.status(201).json({ attempt });
+    } catch (error) {
+      if ((error as Error & { statusCode?: number }).statusCode === 429) {
+        response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryable: true });
+        return;
+      }
+      response.status(503).json({ error: "We couldn't prepare your interview - would you like to try again?", retryable: true });
+    }
+  });
+
+  app.get('/api/rounds/:attemptId/focus-summary', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const rows = await db.query<{ event_type: string; total: number }>(`
+        SELECT event_type, COUNT(*)::int AS total
+          FROM round_focus_events
+         WHERE user_id = $1 AND attempt_id = $2
+         GROUP BY event_type
+      `, [user.id, attemptId]);
+      response.json({ events: rows.map((row) => ({ type: row.event_type, total: Number(row.total) })) });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load focus summary.' });
+    }
+  });
+
+  app.get('/api/internal/failed-ai-jobs', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const plan = await getEffectivePlan(user.id);
+      if (plan !== 'team' && process.env.NODE_ENV === 'production') {
+        response.status(403).json({ error: 'Team access is required.' });
+        return;
+      }
+      const rows = await db.query<{
+        id: string;
+        user_id: string;
+        feature: string;
+        attempt_id: string;
+        status: string;
+        error_message: string | null;
+        created_at: string;
+        updated_at: string;
+      }>(`
+        SELECT id, user_id, feature, attempt_id, status, error_message, created_at, updated_at
+          FROM ai_retry_jobs
+         WHERE status = 'failed'
+         ORDER BY updated_at DESC
+         LIMIT 100
+      `);
+      response.json({ jobs: rows });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load failed jobs.' });
+    }
+  });
+
   app.post('/api/round-attempts/start', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
     const roundType = String(request.body?.roundType ?? '').trim();
     const questionType = String(request.body?.questionType ?? '').trim() as 'scenario' | 'coding' | 'mcq' | 'fill_blank' | 'system_design' | 'mock';
     const selectedDomain = await getUserSelectedDomain(user.id);
+    if (!selectedDomain) {
+      response.status(400).json({ error: 'Choose your interview domain in onboarding before starting a round.' });
+      return;
+    }
     const domain = normalizeDomain(request.body?.domain, selectedDomain);
     const limit = Math.min(10, Math.max(1, Number(request.body?.limit ?? 1)));
     const durationMinutes = Math.min(90, Math.max(5, Number(request.body?.durationMinutes ?? 15)));
@@ -2313,7 +3532,32 @@ export async function createApp(options: { listen?: boolean } = {}) {
       return;
     }
 
+    if (['scenario-round', 'coding-round', 'mock-interview'].includes(roundType)) {
+      const entitlement = await getEntitlement(user.id, roundType);
+      if (!entitlement.hasAccess) {
+        response.status(403).json({ error: entitlement.upgradeMessage ?? entitlement.reason ?? 'Upgrade required.', ...entitlement });
+        return;
+      }
+    }
+
     try {
+      if (['coding-round', 'mock-interview'].includes(roundType)) {
+        const existing = await db.prepare(`
+          SELECT id
+            FROM round_attempts
+           WHERE user_id = ? AND round_type = ? AND domain = ? AND status = 'started'
+           ORDER BY started_at DESC
+           LIMIT 1
+        `).get<{ id: string }>(user.id, roundType, domain);
+        if (existing?.id) {
+          const attempt = await getRoundAttemptById(user.id, existing.id);
+          if (attempt) {
+            response.json({ attempt });
+            return;
+          }
+        }
+      }
+
       const attempt = await createRoundAttempt({
         userId: user.id,
         roundType,
@@ -2345,6 +3589,91 @@ export async function createApp(options: { listen?: boolean } = {}) {
       response.json({ attempt });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to submit the round attempt.' });
+    }
+  });
+
+  app.post('/api/round-attempts/:attemptId/feedback', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const attemptId = String(request.params.attemptId ?? '').trim();
+    const questionId = String(request.body?.questionId ?? '').trim();
+    const answer = String(request.body?.answer ?? '').trim();
+    const mode = String(request.body?.mode ?? '') === 'mock' ? 'mock' : 'scenario';
+    const persona = String(request.body?.persona ?? 'Supportive Mentor').trim() || 'Supportive Mentor';
+
+    if (!attemptId || !questionId || !answer) {
+      response.status(400).json({ error: 'attemptId, questionId, and answer are required.' });
+      return;
+    }
+
+    try {
+      const attempt = await db.prepare(`
+        SELECT id, domain, round_type, question_ids, answer_payload
+          FROM round_attempts
+         WHERE id = ? AND user_id = ?
+      `).get<{ id: string; domain: string; round_type: string; question_ids: unknown; answer_payload: unknown }>(attemptId, user.id);
+      if (!attempt) {
+        response.status(404).json({ error: 'Round attempt not found.' });
+        return;
+      }
+      if (!parseJsonArray(attempt.question_ids).includes(questionId)) {
+        response.status(400).json({ error: 'This question does not belong to the active attempt.' });
+        return;
+      }
+
+      const question = await db.prepare(`
+        SELECT id, domain, domain_label, topic, type, difficulty, question_text, options, correct_answer, explanation, code_snippet, tags, time_limit_minutes
+          FROM questions
+         WHERE id = ?
+      `).get<TrackQuestionRow>(questionId);
+      if (!question) {
+        response.status(404).json({ error: 'Question not found.' });
+        return;
+      }
+
+      let feedback = fallbackRoundFeedback(mode, answer);
+      try {
+        await checkAiRateLimit(user.id, mode === 'mock' ? 'persona-response' : 'answer-evaluation', 1);
+        const repoContext = await getLatestRepoContext(user.id);
+        const systemPrompt = mode === 'mock'
+          ? `You are ${persona}, a realistic technical interviewer. Respond conversationally in 1-3 sentences, score internally, and return only JSON.`
+          : 'You are a senior engineer evaluating one step of a realistic scenario interview. Be direct, fair, and specific. Return only JSON.';
+        const userPrompt = mode === 'mock'
+          ? `Domain: ${question.domain_label}. Repo context: ${repoContext}. Question: "${question.question_text}". What we are looking for: "${question.correct_answer}". Candidate answer: "${answer}". Return JSON: { "spokenResponse": string, "followUpQuestion": string|null, "internalScore": number, "internalFlags": string[], "strengthSignal": string|null, "feedback": string, "whatWorked": string, "whatWasMissed": string }.`
+          : `Scenario context: "${question.question_text}". Topic: "${question.topic}". Repo context: ${repoContext}. Candidate answer: "${answer}". If the answer is under 80 characters, factor brevity into the score. Evaluate this step. Return JSON: { "score": number, "feedback": string, "whatWorked": string, "whatWasMissed": string, "seniorEngineerWouldHaveSaid": string }.`;
+        const ai = await callStructuredModel(
+          systemPrompt,
+          userPrompt,
+          (payload) => normalizeRoundFeedbackPayload(mode, payload),
+          {
+            maxTokens: 900,
+            timeoutMs: 25000,
+            model: process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat',
+            temperature: 0.2,
+          },
+        );
+        feedback = ai.result;
+      } catch (error) {
+        if ((error as Error & { statusCode?: number }).statusCode === 429) {
+          response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
+          return;
+        }
+        feedback = fallbackRoundFeedback(mode, answer);
+        await queueAiRetryJob(user.id, mode, attemptId, { questionId, answer, mode, persona });
+        await markAiRetryJobsFailed(user.id, mode, attemptId, error instanceof Error ? error.message : 'AI evaluation failed after fallback.');
+      }
+
+      const payload = parseJsonRecord(attempt.answer_payload);
+      const feedbackMap = parseJsonRecord(payload.feedback);
+      feedbackMap[questionId] = feedback;
+      await db.prepare(`
+        UPDATE round_attempts
+           SET answer_payload = ?::jsonb, updated_at = NOW()
+         WHERE id = ? AND user_id = ?
+      `).run(JSON.stringify({ ...payload, feedback: feedbackMap }), attemptId, user.id);
+
+      response.json({ feedback });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to generate feedback.' });
     }
   });
 
@@ -2429,7 +3758,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
     const email = normalizeEmail(request.body?.email);
     const name = String(request.body?.name ?? '').trim();
     const password = String(request.body?.password ?? '');
-    const domain = normalizeDomain(request.body?.domain);
 
     if (!email || !email.includes('@')) {
       response.status(400).json({ error: 'A valid email address is required.' });
@@ -2455,7 +3783,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
     await db.prepare('INSERT INTO users (id, email, name, password_hash, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
       .run(userId, email, name, passwordHash, 1);
     await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
-      .run(crypto.randomUUID(), userId, 0, 'light', domain);
+      .run(crypto.randomUUID(), userId, 0, 'light', '');
 
     const createdUser = await db.prepare('SELECT id, email, name, password_hash, auth_provider, email_verified, created_at, updated_at FROM users WHERE id = ?')
       .get<DbUserRow>(userId);
@@ -2702,11 +4030,11 @@ export async function createApp(options: { listen?: boolean } = {}) {
     let preferences = await db.prepare('SELECT sidebar_open, theme, domain FROM user_preferences WHERE user_id = ?').get<UserPreferencesRow>(user.id);
     if (!preferences) {
       await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
-        .run(crypto.randomUUID(), user.id, 0, 'light', 'frontend');
-      preferences = { sidebar_open: false, theme: 'light', domain: 'frontend' };
+        .run(crypto.randomUUID(), user.id, 0, 'light', '');
+      preferences = { sidebar_open: false, theme: 'light', domain: '' };
     }
 
-    response.json({ sidebarOpen: Boolean(preferences.sidebar_open), theme: preferences.theme ?? 'light', domain: normalizeDomain(preferences.domain) });
+    response.json({ sidebarOpen: Boolean(preferences.sidebar_open), theme: preferences.theme ?? 'light', domain: normalizeOptionalDomain(preferences.domain) });
   });
 
   app.patch('/api/users/preferences', requireUser, async (request, response) => {
@@ -2714,7 +4042,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
     const sidebarOpen = typeof request.body?.sidebarOpen === 'boolean' ? request.body.sidebarOpen : null;
     const themeValue = typeof request.body?.theme === 'string' ? request.body.theme : null;
     const theme = themeValue && ['light', 'dark', 'system'].includes(themeValue) ? themeValue : null;
-    const domain = request.body?.domain === undefined ? null : normalizeDomain(request.body.domain);
+    const domain = request.body?.domain === undefined ? null : normalizeOptionalDomain(request.body.domain);
     const existing = await db.prepare('SELECT user_id FROM user_preferences WHERE user_id = ?').get<{ user_id: string }>(user.id);
 
     if (existing) {
@@ -2722,7 +4050,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         .run(sidebarOpen === null ? null : (sidebarOpen ? 1 : 0), theme, domain, user.id);
     } else {
       await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
-        .run(crypto.randomUUID(), user.id, sidebarOpen === null ? 0 : (sidebarOpen ? 1 : 0), theme ?? 'light', domain ?? 'frontend');
+        .run(crypto.randomUUID(), user.id, sidebarOpen === null ? 0 : (sidebarOpen ? 1 : 0), theme ?? 'light', domain ?? '');
     }
 
     response.json({ success: true, sidebarOpen, theme: theme ?? themeValue, domain });
@@ -2923,6 +4251,13 @@ export async function createApp(options: { listen?: boolean } = {}) {
                error_message = 'Re-scan started; previous stale pending job was replaced.'
          WHERE user_id = ? AND repo_url = ? AND status = 'pending'
       `).run(user.id, repoUrl);
+    }
+
+    const entitlement = await getEntitlement(user.id, 'github-scan');
+    if (!entitlement.hasAccess) {
+      releaseSingleFlight();
+      response.status(403).json({ status: 'upgrade_required', message: entitlement.upgradeMessage ?? entitlement.reason ?? 'Upgrade required.', error: entitlement.upgradeMessage ?? entitlement.reason ?? 'Upgrade required.', ...entitlement });
+      return;
     }
 
     const accessToken = await getGithubAccessToken(user.id);

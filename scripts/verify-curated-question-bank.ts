@@ -82,8 +82,10 @@ async function verifyBatch(batch: typeof questions): Promise<VerificationResult>
 
 async function main() {
   const summary = {
-    importedQuestions: report.importedQuestions,
-    structuralSkippedQuestionNumbers: report.skippedQuestionNumbers,
+    importedQuestions: 'importedQuestions' in report ? report.importedQuestions : report.totalQuestions,
+    structuralSkippedQuestionNumbers: 'skippedQuestionNumbers' in report ? report.skippedQuestionNumbers : [],
+    rounds: 'rounds' in report ? report.rounds : undefined,
+    topics: 'topics' in report ? report.topics : undefined,
     deepseekChecked: 0,
     deepseekMismatches: [] as Array<{ id: string; reason: string }>,
   };

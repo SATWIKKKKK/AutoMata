@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { DOMAIN_LABELS } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
-import { fetchLatestRoundAttempt, type RoundAttemptDetail, type StoredRoundAttempt } from '../lib/questionBankApi';
+import { fetchLatestRoundAttempt, fetchRoundFocusSummary, type RoundAttemptDetail, type StoredRoundAttempt } from '../lib/questionBankApi';
 import { getRoundResult } from '../lib/roundResults';
 
 const ROUND_LABELS: Record<string, string> = {
@@ -20,6 +20,7 @@ export default function ResultsPage() {
   const roundType = params.roundType ?? 'practice-tracks';
   const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
   const [loadingAttempt, setLoadingAttempt] = useState(true);
+  const [focusEvents, setFocusEvents] = useState<Array<{ type: string; total: number }>>([]);
   const storedResult = getRoundResult(roundType);
   const title = storedResult?.roundName ? `${storedResult.roundName} Results` : (ROUND_LABELS[roundType] ?? 'Results');
   const domainLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend';
@@ -66,6 +67,17 @@ export default function ResultsPage() {
       ignore = true;
     };
   }, [roundType]);
+
+  useEffect(() => {
+    if (!attempt?.id) return;
+    let ignore = false;
+    void fetchRoundFocusSummary(attempt.id).then((result) => {
+      if (!ignore && result.ok) setFocusEvents(result.data);
+    });
+    return () => {
+      ignore = true;
+    };
+  }, [attempt?.id]);
 
   return (
     <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-16">
@@ -156,6 +168,15 @@ export default function ResultsPage() {
                   </div>
                 ))}
               </div>
+            </article>
+          ) : null}
+
+          {focusEvents.length ? (
+            <article className="surface-card lg:col-span-12">
+              <h2 className="text-headline-md text-primary not-italic">Session Integrity</h2>
+              <p className="mt-3 text-body-md text-blueprint-muted">
+                {focusEvents.map((event) => `${event.total} ${event.type.replace(/-/g, ' ')}`).join(', ')} detected during this session.
+              </p>
             </article>
           ) : null}
         </section>

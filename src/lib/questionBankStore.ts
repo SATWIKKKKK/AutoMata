@@ -279,6 +279,16 @@ function asObject<T>(value: unknown, fallback: T): T {
   return fallback;
 }
 
+function questionHash(text: string) {
+  const normalized = text
+    .slice(0, 160)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 12);
+}
+
 function mapQuestionRow(row: DbQuestionRow): BankQuestion {
   return {
     id: row.id,
@@ -637,8 +647,7 @@ export async function ensureQuestionBankSeeded() {
   await withClient(async (client) => {
     await client.query(
       `DELETE FROM questions
-        WHERE domain = 'frontend'
-          AND id NOT LIKE 'frontend-curated-%'`,
+        WHERE domain = 'frontend'`,
     );
     await client.query(
       `DELETE FROM questions
@@ -795,12 +804,21 @@ export async function createRoundAttempt(params: {
       );
 
       for (const questionId of questionIds) {
+        const question = questions.find((item) => item.id === questionId);
         await client.query(
           `INSERT INTO question_assignments (
             id, user_id, question_id, attempt_id, round_type, assigned_at, created_at
           ) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
           [crypto.randomUUID(), params.userId, questionId, attemptId, params.roundType],
         );
+        if (question) {
+          await client.query(
+            `INSERT INTO question_history (id, user_id, domain, round_type, question_hash, question_text, seen_at)
+             VALUES ($1, $2, $3, $4, $5, $6, NOW())
+             ON CONFLICT (user_id, domain, round_type, question_hash) DO NOTHING`,
+            [crypto.randomUUID(), params.userId, params.domain, params.roundType, questionHash(question.questionText), question.questionText],
+          );
+        }
       }
 
       await client.query('COMMIT');
@@ -857,7 +875,7 @@ export async function submitRoundAttempt(params: {
     const answer = answersById.get(question.id);
     const fallback = question.type === 'coding'
       ? evaluateCodingAnswer(question, answer)
-      : question.type === 'mock' || question.type === 'system_design'
+      : question.type === 'mock' || question.type === 'system_design' || question.type === 'scenario'
         ? evaluateSubjectiveAnswer(question, answer)
         : evaluateObjectiveAnswer(question, answer);
     return evaluateWithDeepSeek(question, answer, fallback);

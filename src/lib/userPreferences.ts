@@ -13,7 +13,7 @@ type UserPreferencesResult =
 
 function normalizeDomain(value: unknown) {
   const domain = String(value ?? '').trim();
-  return DOMAIN_LABELS[domain] ? domain : 'frontend';
+  return DOMAIN_LABELS[domain] ? domain : '';
 }
 
 function normalizePreferences(payload: unknown): UserPreferences {

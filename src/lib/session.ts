@@ -43,7 +43,7 @@ export async function requestEmailOtp(payload: { email: string; purpose: 'email_
   return { ok: true, message: result.data.message, debugOtp: result.data.debugOtp, emailSent: result.data.emailSent };
 }
 
-export async function registerLocalAccount(payload: { email: string; name: string; password: string; domain?: string }): Promise<AuthResult> {
+export async function registerLocalAccount(payload: { email: string; name: string; password: string }): Promise<AuthResult> {
   const result = await requestJson<{ user: SessionUser }>('/api/auth/signup', {
     method: 'POST',
     body: JSON.stringify(payload),

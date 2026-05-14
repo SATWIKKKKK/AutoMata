@@ -18,8 +18,86 @@ model User {
   githubRepos          GithubRepo[]
   repoScanJobs         RepoScanJob[]
   userRepoInteractions UserRepoInteraction[]
+  subscription         Subscription?
+  billingOrders        BillingOrder[]
+  practiceTracks       PracticeTrack[]
 
   @@map("users")
+}
+
+model PracticeTrack {
+  id                 String        @id @default(uuid())
+  userId             String        @map("user_id")
+  domain             String
+  currentModuleIndex Int           @default(0) @map("current_module_index")
+  completedModuleIds Json          @default("[]") @map("completed_module_ids")
+  startedAt          DateTime      @default(now()) @map("started_at") @db.Timestamptz(6)
+  lastActiveAt       DateTime      @default(now()) @map("last_active_at") @db.Timestamptz(6)
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  modules            TrackModule[]
+
+  @@unique([userId, domain])
+  @@index([userId, lastActiveAt])
+  @@map("practice_tracks")
+}
+
+model TrackModule {
+  id          String        @id @default(uuid())
+  trackId     String        @map("track_id")
+  moduleKey   String        @map("module_key")
+  moduleTitle String        @map("module_title")
+  moduleIndex Int           @default(0) @map("module_index")
+  status      String        @default("locked")
+  score       Int?
+  questionIds Json          @default("[]") @map("question_ids")
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime      @default(now()) @map("updated_at") @db.Timestamptz(6)
+  track       PracticeTrack @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@unique([trackId, moduleKey])
+  @@index([trackId, moduleIndex])
+  @@map("track_modules")
+}
+
+model Subscription {
+  id                       String    @id @default(uuid())
+  userId                   String    @unique @map("user_id")
+  plan                     String    @default("free")
+  status                   String    @default("active")
+  provider                 String    @default("manual")
+  razorpayCustomerId       String?   @map("razorpay_customer_id")
+  razorpaySubscriptionId   String?   @map("razorpay_subscription_id")
+  razorpayPaymentId        String?   @map("razorpay_payment_id")
+  currentPeriodEnd         DateTime? @map("current_period_end") @db.Timestamptz(6)
+  billingInterval          String?   @default("monthly") @map("billing_interval")
+  seats                    Int       @default(1)
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user                     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("subscriptions")
+}
+
+model BillingOrder {
+  id                String    @id @default(uuid())
+  userId            String    @map("user_id")
+  razorpayOrderId   String    @unique @map("razorpay_order_id")
+  plan              String
+  billingInterval   String    @map("billing_interval")
+  seats             Int       @default(1)
+  amountPaise       Int       @map("amount_paise")
+  currency          String    @default("INR")
+  status            String    @default("created")
+  razorpayPaymentId String?   @map("razorpay_payment_id")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  verifiedAt        DateTime? @map("verified_at") @db.Timestamptz(6)
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("billing_orders")
 }
 
 model GithubRepo {

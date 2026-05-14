@@ -29,7 +29,7 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>('light');
-  const [domain, setDomain] = useState(workspace.selections.domain || 'frontend');
+  const [domain, setDomain] = useState(workspace.selections.domain || '');
   const [domainModalOpen, setDomainModalOpen] = useState(false);
   const [domainError, setDomainError] = useState<string | null>(null);
   const [domainSaving, setDomainSaving] = useState(false);
@@ -298,7 +298,7 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
               <div className="lg:col-span-2">
                 <p className="text-ui-label text-blueprint-muted">Current Domain</p>
                 <div className="mt-3 rounded-2xl border border-blueprint-line bg-card p-5 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.02)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]">
-                  <p className="text-body-lg font-semibold text-primary">{selectedDomainOption?.label ?? DOMAIN_LABELS[domain] ?? domain}</p>
+                  <p className="text-body-lg font-semibold text-primary">{selectedDomainOption?.label ?? DOMAIN_LABELS[domain] ?? 'Not selected yet'}</p>
                   <p className="mt-2 max-w-2xl text-body-md text-blueprint-muted">
                     {selectedDomainOption?.description ?? 'Questions, rounds, practice tracks, and dashboard insights will use this domain.'}
                   </p>
