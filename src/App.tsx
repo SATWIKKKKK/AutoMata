@@ -56,6 +56,30 @@ function SettingsRoute({ onViewChange }: { onViewChange: (view: View) => void })
   return <Settings onViewChange={onViewChange} initialTab={normalizedTab} />;
 }
 
+function PricingGate() {
+  const navigate = useNavigate();
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+      <div className="relative z-10 w-full max-w-md rounded-2xl border border-blueprint-line bg-card p-6 text-center shadow-2xl">
+        <p className="text-ui-label text-blueprint-muted">Login Required</p>
+        <h1 className="mt-2 text-headline-md text-primary not-italic">Pricing is available inside your dashboard.</h1>
+        <p className="mt-3 text-body-md text-blueprint-muted">
+          Sign in to view billing options, current plan status, and checkout.
+        </p>
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
+          <button type="button" onClick={() => navigate('/login')} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">
+            Login
+          </button>
+          <button type="button" onClick={() => navigate('/')} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary">
+            Back
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -272,7 +296,7 @@ function AppShell() {
             <Route path="/settings/:tab" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SettingsRoute onViewChange={handleViewChange} /></ProtectedRoute>} />
 
             <Route path="/docs" element={<Navigate to="/onboarding" replace />} />
-            <Route path="/pricing" element={<Pricing onViewChange={handleViewChange} />} />
+            <Route path="/pricing" element={user?.loggedIn ? <Pricing onViewChange={handleViewChange} /> : <PricingGate />} />
             <Route path="/privacy" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Privacy onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/terms" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Terms onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/security" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SecurityPage onViewChange={handleViewChange} /></ProtectedRoute>} />

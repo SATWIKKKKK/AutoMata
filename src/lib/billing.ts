@@ -1,5 +1,5 @@
 export type BillingPlan = 'free' | 'pro' | 'team';
-export type BillingInterval = 'monthly' | 'annual';
+export type BillingInterval = 'monthly' | 'semiannual' | 'annual';
 
 export type PlanLimits = {
   activeDomains: number | 'all';

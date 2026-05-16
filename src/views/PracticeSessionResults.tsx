@@ -157,7 +157,7 @@ export default function PracticeSessionResults() {
               <p className="text-ui-label text-blueprint-muted">Weak Tags</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {session.weakTags.length ? session.weakTags.map((tag) => (
-                  <span key={tag} className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-ui-label text-primary">{tag}</span>
+                  <span key={tag} className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-ui-label text-amber-950 dark:border-amber-300/50 dark:bg-amber-500/20 dark:text-amber-100">{tag}</span>
                 )) : <span className="text-body-md text-blueprint-muted">No weak tags detected in this session.</span>}
               </div>
             </div>

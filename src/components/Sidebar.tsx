@@ -6,6 +6,7 @@ import {
   Home,
   LibraryBig,
   Menu,
+  CreditCard,
   Settings,
   Terminal,
   Workflow,
@@ -28,6 +29,7 @@ const NAV_ITEMS: Array<{ id: View; label: string; icon: React.ElementType }> = [
   { id: 'editor', label: 'Coding Round', icon: Terminal },
   { id: 'terminal', label: 'Mock Interview', icon: Activity },
   { id: 'questionBank', label: 'Question Bank', icon: LibraryBig },
+  { id: 'pricing', label: 'Pricing', icon: CreditCard },
 ];
 
 function NavButton({

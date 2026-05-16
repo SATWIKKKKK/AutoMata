@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -61,6 +61,7 @@ const PLAN_DETAILS: Array<{
   description: string;
   monthly: string;
   annual: string;
+  semiannual: string;
   helper: string;
   features: string[];
   mutedFeatures?: string[];
@@ -72,6 +73,7 @@ const PLAN_DETAILS: Array<{
     accent: 'bg-[#f1efe8] text-[#5f5e5a]',
     description: 'Start preparing without a card.',
     monthly: '₹0',
+    semiannual: '₹0',
     annual: '₹0',
     helper: 'No credit card required',
     features: ['1 active domain', '20 question-bank questions/day', 'Unlimited practice sessions', '1 GitHub repo scan'],
@@ -79,25 +81,27 @@ const PLAN_DETAILS: Array<{
   },
   {
     id: 'pro',
-    name: 'Pro',
+    name: 'Monthly',
     icon: Rocket,
     accent: 'bg-[#e1f5ee] text-[#0f6e56]',
-    description: 'Everything needed for serious interview prep.',
-    monthly: '₹999',
-    annual: '₹8,499',
-    helper: 'Annual saves over 25%',
+    description: 'Serious prep with all high-signal modules.',
+    monthly: '₹29',
+    semiannual: '₹149',
+    annual: '₹299',
+    helper: 'Best for short interview sprints',
     features: ['All domains unlocked', 'Unlimited question bank', 'Unlimited practice sessions', '5 mock interviews/month', '10 coding problems/month', 'Unlimited scenario rounds', '5 GitHub repos + PDF export'],
   },
   {
     id: 'team',
-    name: 'Team',
+    name: 'Long-Term',
     icon: Users,
     accent: 'bg-[#eeedfe] text-[#534ab7]',
-    description: 'Built for prep cohorts and placement teams.',
-    monthly: '₹2,499',
-    annual: '₹25,188',
-    helper: 'Per user, 3-seat minimum',
-    features: ['Everything in Pro', 'Team readiness dashboard', 'Shared question banks', 'Custom scenario creation', 'Unlimited repos', 'Priority support', 'Bulk seat management'],
+    description: 'Lock in longer access for placement season.',
+    monthly: '₹29',
+    semiannual: '₹149',
+    annual: '₹299',
+    helper: 'Choose 6 months or 1 year',
+    features: ['Everything in Monthly', '6-month or yearly access', 'Shared question banks', 'Custom scenario creation', 'Unlimited repos', 'Priority support', 'Bulk seat management'],
   },
 ];
 
@@ -167,7 +171,6 @@ export default function Pricing({ onViewChange }: PricingProps) {
   const user = getStoredUser();
   const [billingInterval, setBillingInterval] = useState<BillingInterval>('monthly');
   const [subscription, setSubscription] = useState<SubscriptionState | null>(null);
-  const [teamSeats, setTeamSeats] = useState(3);
   const [openFaq, setOpenFaq] = useState(0);
   const [processingPlan, setProcessingPlan] = useState<BillingPlan | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -185,11 +188,8 @@ export default function Pricing({ onViewChange }: PricingProps) {
   }, [user?.loggedIn]);
 
   const annual = billingInterval === 'annual';
+  const semiannual = billingInterval === 'semiannual';
   const activePlan = subscription?.plan ?? 'free';
-  const teamTotal = useMemo(() => {
-    const perSeat = annual ? 25188 : 2499;
-    return perSeat * teamSeats;
-  }, [annual, teamSeats]);
 
   const startCheckout = async (plan: BillingPlan) => {
     setError(null);
@@ -201,7 +201,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
     }
 
     setProcessingPlan(plan);
-    const order = await createBillingOrder({ plan, billingInterval, seats: plan === 'team' ? teamSeats : 1 });
+    const order = await createBillingOrder({ plan, billingInterval, seats: 1 });
     if (order.ok === false) {
       setError(order.error);
       setProcessingPlan(null);
@@ -247,7 +247,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
             return;
           }
           setSubscription(result.data);
-          setMessage(`${plan === 'team' ? 'Team' : 'Pro'} is active. Your account limits are updated.`);
+          setMessage(`${plan === 'team' ? 'Long-Term' : 'Monthly'} is active. Your account limits are updated.`);
         });
       },
       modal: {
@@ -292,7 +292,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
           </div>
 
           <div className="flex w-fit items-center gap-3 rounded-full border border-blueprint-line bg-card p-1">
-            {(['monthly', 'annual'] as BillingInterval[]).map((interval) => (
+            {(['monthly', 'semiannual', 'annual'] as BillingInterval[]).map((interval) => (
               <button
                 key={interval}
                 type="button"
@@ -302,7 +302,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
                   billingInterval === interval ? 'bg-primary text-white' : 'text-blueprint-muted hover:text-primary',
                 )}
               >
-                {interval === 'monthly' ? 'Monthly' : 'Annual'}
+                {interval === 'monthly' ? 'Monthly' : interval === 'semiannual' ? '6 Months' : 'Annual'}
               </button>
             ))}
             <span className={cn('mr-2 rounded-md px-2 py-1 text-technical-mono', annual ? 'bg-[#e1f5ee] text-[#0f6e56]' : 'bg-[#efeded] text-blueprint-muted')}>
@@ -321,7 +321,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
           {PLAN_DETAILS.map((plan) => {
             const Icon = plan.icon;
             const featured = plan.id === 'pro';
-            const price = annual ? plan.annual : plan.monthly;
+            const price = annual ? plan.annual : semiannual ? plan.semiannual : plan.monthly;
             const isCurrent = Boolean(user?.loggedIn) && activePlan === plan.id;
             return (
               <article key={plan.id} className={cn('surface-card relative flex min-h-[520px] flex-col', featured && 'border-primary')}>
@@ -336,24 +336,10 @@ export default function Pricing({ onViewChange }: PricingProps) {
                 <p className="text-ui-label text-blueprint-muted">{plan.name}</p>
                 <h2 className="mt-3 text-headline-lg text-primary not-italic">
                   {price}
-                  {plan.id === 'team' ? <span className="ml-2 text-body-md text-blueprint-muted">/ user</span> : plan.id === 'pro' ? <span className="ml-2 text-body-md text-blueprint-muted">{annual ? '/ year' : '/ mo'}</span> : null}
+                  {plan.id !== 'free' ? <span className="ml-2 text-body-md text-blueprint-muted">{annual ? '/ year' : semiannual ? '/ 6 mo' : '/ mo'}</span> : null}
                 </h2>
-                {plan.id === 'team' && annual ? <p className="mt-1 text-technical-mono text-blueprint-muted">₹2,099/user/mo billed annually</p> : null}
                 <p className="mt-3 min-h-12 text-body-md text-blueprint-muted">{plan.description}</p>
                 <p className="mt-2 text-technical-mono text-blueprint-muted">{plan.helper}</p>
-
-                {plan.id === 'team' ? (
-                  <div className="mt-5 flex items-center justify-between rounded-lg border border-blueprint-line bg-[#efeded] px-4 py-3">
-                    <span className="text-ui-label text-primary">Seats</span>
-                    <div className="flex items-center gap-3">
-                      <button type="button" aria-label="Decrease seats" onClick={() => setTeamSeats((value) => Math.max(3, value - 1))} className="h-8 w-8 rounded-full border border-blueprint-line bg-card text-primary">-</button>
-                      <span className="w-6 text-center text-ui-label text-primary">{teamSeats}</span>
-                      <button type="button" aria-label="Increase seats" onClick={() => setTeamSeats((value) => value + 1)} className="h-8 w-8 rounded-full border border-blueprint-line bg-card text-primary">+</button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {plan.id === 'team' ? <p className="mt-3 text-technical-mono text-blueprint-muted">Total: ₹{teamTotal.toLocaleString('en-IN')}{annual ? '/year' : '/month'}</p> : null}
 
                 <div className="my-6 h-px bg-blueprint-line" />
                 <ul className="flex flex-1 flex-col gap-3">
@@ -380,7 +366,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
                     featured ? 'bg-primary text-white hover:bg-[#303031]' : 'border border-blueprint-line bg-card text-primary hover:bg-[#f5f3f3]',
                   )}
                 >
-                  {isCurrent ? 'Current plan' : processingPlan === plan.id ? 'Opening Razorpay...' : plan.id === 'free' ? 'Start Free' : `Upgrade to ${plan.name}`}
+                  {isCurrent ? 'Current plan' : processingPlan === plan.id ? 'Opening Razorpay...' : plan.id === 'free' ? 'Start Free' : `Choose ${plan.name}`}
                   {!isCurrent ? <ArrowRight size={15} /> : null}
                 </button>
               </article>

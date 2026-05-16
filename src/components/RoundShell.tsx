@@ -42,6 +42,7 @@ export default function RoundShell({
   pausedMs = 0,
   counter,
   onEndEarly,
+  onMaxVisibilityLeaves,
   children,
 }: {
   attemptId?: string | null;
@@ -51,17 +52,20 @@ export default function RoundShell({
   pausedMs?: number;
   counter?: string;
   onEndEarly?: () => void;
+  onMaxVisibilityLeaves?: () => void;
   children: React.ReactNode;
 }) {
   const timerRef = useRef<HTMLSpanElement | null>(null);
   const pauseStartedAtRef = useRef<number | null>(null);
   const pausedMsRef = useRef(pausedMs);
   const [visibilityWarning, setVisibilityWarning] = useState(false);
+  const [visibilityLeaveCount, setVisibilityLeaveCount] = useState(0);
   const [fullscreenWarning, setFullscreenWarning] = useState(false);
   const [offline, setOffline] = useState(() => typeof navigator !== 'undefined' ? !navigator.onLine : false);
   const [endConfirm, setEndConfirm] = useState(false);
   const isMobile = useMemo(() => typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent), []);
   const startedAtMs = startedAt ? new Date(startedAt).getTime() : Date.now();
+  const leaveCountKey = attemptId ? `repoid-round-leaves:${feature}:${attemptId}` : '';
 
   useEffect(() => {
     let frame = 0;
@@ -77,8 +81,27 @@ export default function RoundShell({
     const handleVisibility = () => {
       if (!attemptId) return;
       if (document.hidden) {
+        let nextCount = 1;
+        try {
+          nextCount = Number(window.localStorage.getItem(leaveCountKey) ?? 0) + 1;
+          window.localStorage.setItem(leaveCountKey, String(nextCount));
+        } catch {
+          nextCount = visibilityLeaveCount + 1;
+        }
+        setVisibilityLeaveCount(nextCount);
         void logFocusEvent(attemptId, feature, 'visibility-hidden');
       } else {
+        let count = visibilityLeaveCount;
+        try {
+          count = Number(window.localStorage.getItem(leaveCountKey) ?? visibilityLeaveCount);
+        } catch {
+          count = visibilityLeaveCount;
+        }
+        if (count >= 5) {
+          void logFocusEvent(attemptId, feature, 'visibility-limit-exceeded', { count });
+          onMaxVisibilityLeaves?.();
+          return;
+        }
         setVisibilityWarning(true);
         void logFocusEvent(attemptId, feature, 'visibility-returned');
       }
@@ -115,7 +138,7 @@ export default function RoundShell({
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('keydown', handleKeydown);
     };
-  }, [attemptId, feature]);
+  }, [attemptId, feature, leaveCountKey, onMaxVisibilityLeaves, visibilityLeaveCount]);
 
   useEffect(() => {
     const goOnline = () => setOffline(false);
@@ -154,9 +177,9 @@ export default function RoundShell({
       </div>
 
       {offline ? <div className="fixed left-1/2 top-20 z-[90] -translate-x-1/2 rounded-full border border-blueprint-line bg-card px-5 py-3 text-ui-label text-primary shadow-xl">Connection lost - your answer is saved locally.</div> : null}
-      {visibilityWarning ? <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 px-4"><div className="max-w-md rounded-2xl bg-card p-6 text-center"><h2 className="text-headline-md text-primary not-italic">You left the round.</h2><p className="mt-2 text-body-md text-blueprint-muted">The timer continued running and your progress is intact.</p><button type="button" onClick={() => setVisibilityWarning(false)} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">Resume</button></div></div> : null}
+      {visibilityWarning ? <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 px-4"><div className="max-w-md rounded-2xl bg-card p-6 text-center"><h2 className="text-headline-md text-primary not-italic">You left the round.</h2><p className="mt-2 text-body-md text-blueprint-muted">The timer continued running and your progress is intact. Leave count: {visibilityLeaveCount}/5.</p><button type="button" onClick={() => setVisibilityWarning(false)} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">Resume</button></div></div> : null}
       {fullscreenWarning ? <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40 px-4"><div className="max-w-md rounded-2xl bg-card p-6 text-center"><h2 className="text-headline-md text-primary not-italic">Return to fullscreen.</h2><p className="mt-2 text-body-md text-blueprint-muted">The round is paused while this overlay is active.</p><button type="button" onClick={() => { void resumeFullscreen(); }} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">Re-enter Fullscreen</button></div></div> : null}
-      {endConfirm ? <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 px-4"><div className="max-w-md rounded-2xl bg-card p-6"><p className="text-ui-label text-blueprint-muted">End Round Early</p><h2 className="mt-2 text-headline-md text-primary not-italic">Submit your current progress?</h2><p className="mt-2 text-body-md text-blueprint-muted">Your saved answers will be submitted and scored where possible.</p><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => setEndConfirm(false)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary">Stay</button><button type="button" onClick={onEndEarly} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">End Round</button></div></div></div> : null}
+      {endConfirm ? <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 px-4"><div className="max-w-md rounded-2xl bg-card p-6"><p className="text-ui-label text-blueprint-muted">End Round Early</p><h2 className="mt-2 text-headline-md text-primary not-italic">Submit your current progress?</h2><p className="mt-2 text-body-md text-blueprint-muted">Your saved answers will be submitted and scored where possible.</p><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => setEndConfirm(false)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary">Stay</button><button type="button" onClick={() => { setEndConfirm(false); onEndEarly?.(); }} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">End Round</button></div></div></div> : null}
 
       <RoundErrorBoundary>{children}</RoundErrorBoundary>
     </div>

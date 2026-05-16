@@ -74,7 +74,7 @@ type UserPreferencesRow = {
 };
 
 type BillingPlan = 'free' | 'pro' | 'team';
-type BillingInterval = 'monthly' | 'annual';
+type BillingInterval = 'monthly' | 'semiannual' | 'annual';
 
 type SubscriptionRow = {
   id: string;
@@ -270,16 +270,18 @@ const DOMAIN_ALIASES = new Map<string, string>([
 ]);
 
 const BILLING_PLANS = ['free', 'pro', 'team'] as const;
-const BILLING_INTERVALS = ['monthly', 'annual'] as const;
+const BILLING_INTERVALS = ['monthly', 'semiannual', 'annual'] as const;
 
 const PLAN_PRICING: Record<Exclude<BillingPlan, 'free'>, Record<BillingInterval, { amountPaise: number; displayPrice: string; label: string }>> = {
   pro: {
-    monthly: { amountPaise: 99900, displayPrice: '₹999', label: 'Pro monthly' },
-    annual: { amountPaise: 849900, displayPrice: '₹8,499', label: 'Pro annual' },
+    monthly: { amountPaise: 2900, displayPrice: '₹29', label: 'Pro monthly' },
+    semiannual: { amountPaise: 14900, displayPrice: '₹149', label: 'Pro 6 months' },
+    annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Pro annual' },
   },
   team: {
-    monthly: { amountPaise: 249900, displayPrice: '₹2,499', label: 'Team monthly seat' },
-    annual: { amountPaise: 2518800, displayPrice: '₹25,188', label: 'Team annual seat' },
+    monthly: { amountPaise: 2900, displayPrice: '₹29', label: 'Premium monthly seat' },
+    semiannual: { amountPaise: 14900, displayPrice: '₹149', label: 'Premium 6-month seat' },
+    annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Premium annual seat' },
   },
 };
 
@@ -1021,6 +1023,170 @@ function parsePracticeQuestions(value: unknown): PracticeSessionQuestion[] {
     .filter((item): item is PracticeSessionQuestion => Boolean(item));
 }
 
+function buildPracticeTopUpQuestion(params: {
+  domain: PracticeDomainId;
+  topic: string;
+  index: number;
+  variant: number;
+}): PracticeSessionQuestion {
+  const domainLabel = PRACTICE_DOMAIN_LABELS[params.domain];
+  const topic = params.topic.trim() || domainLabel;
+  const tags = [cleanPracticeTag(topic), domainLabel, params.index >= 20 ? 'Hard Coding Scenario' : 'Practice Top-Up'].filter(Boolean).slice(0, 6);
+  if (params.index < 10) {
+    const answers = ['dependency array', 'idempotency', 'authorization check', 'data leakage', 'evaluation metric'];
+    const correctAnswer = answers[params.index % answers.length];
+    return {
+      id: `topup-${hashText(`${params.domain}:${topic}:fill:${params.index}:${params.variant}`).slice(0, 12)}-${params.index + 1}`,
+      type: 'fill-blank',
+      question: `In ${domainLabel} ${topic} work, the missing concept in this production review is ________: the specific control or decision that prevents repeated work, unsafe access, or misleading results. Focus on the strongest term for scenario ${params.variant + 1}.`,
+      blank: correctAnswer,
+      options: null,
+      correctAnswer,
+      explanation: `${correctAnswer} is the key concept because it names the control that keeps the implementation reliable under realistic interview constraints.`,
+      difficulty: params.index < 4 ? 'easy' : 'medium',
+      tags,
+    };
+  }
+
+  if (params.index < 20) {
+    const correctAnswer = 'Identify the boundary, validate the assumption, and make the smallest reversible fix.';
+    return {
+      id: `topup-${hashText(`${params.domain}:${topic}:mcq:${params.index}:${params.variant}`).slice(0, 12)}-${params.index + 1}`,
+      type: 'mcq',
+      question: `A ${domainLabel} interview question on ${topic} describes a bug but gives incomplete logs. What is the strongest first response? Scenario ${params.variant + 1}: choose the best option.`,
+      blank: null,
+      options: [
+        correctAnswer,
+        'Rewrite the entire module before checking the failure boundary.',
+        'Assume the newest deployment is unrelated and ignore it.',
+        'Skip validation and only optimize the code path that looks slow.',
+      ],
+      correctAnswer,
+      explanation: 'Strong engineering answers isolate the failing boundary, validate the assumption with evidence, and keep the first fix reversible.',
+      difficulty: 'medium',
+      tags,
+    };
+  }
+
+  const snippets: Partial<Record<PracticeDomainId, { question: string; options: string[]; correctAnswer: string; explanation: string }>> = {
+    frontend: {
+      question: `In a ${topic} component, a developer writes: useEffect(() => { fetch('/api/items').then(r => r.json()).then(setItems); }, [items]); The list updates after every response. What will happen here?`,
+      options: [
+        'The effect runs once because fetch is asynchronous.',
+        'The effect can loop because setItems changes items, which is also a dependency.',
+        'React ignores arrays in dependency lists.',
+        'The browser caches the request and prevents re-rendering.',
+      ],
+      correctAnswer: 'The effect can loop because setItems changes items, which is also a dependency.',
+      explanation: 'The state updated inside the effect is also listed as a dependency, so each fetch response can trigger another render and another fetch. Use an empty dependency list for load-once behavior or depend on a stable query key instead.',
+    },
+    backend: {
+      question: `In a ${topic} API handler, code checks the database, then inserts a row only if no existing row is found. Two identical requests arrive at the same time and there is no unique constraint. What will happen here?`,
+      options: [
+        'The database automatically serializes both HTTP requests.',
+        'Duplicate rows can be created because the check and insert are not atomic.',
+        'Only the first request reaches the handler.',
+        'The second request always receives a 409 response.',
+      ],
+      correctAnswer: 'Duplicate rows can be created because the check and insert are not atomic.',
+      explanation: 'A read-before-write flow without a transaction, lock, or unique constraint is race-prone. Enforce uniqueness at the database layer and use an atomic upsert or handle the constraint violation.',
+    },
+    'full-stack': {
+      question: `In a ${topic} feature, the client optimistically marks an item as saved before POST /api/save returns, and the server can reject the request for authorization. What is the safest outcome to implement?`,
+      options: [
+        'Keep the optimistic state forever because the UI felt faster.',
+        'Rollback the UI state and show a clear failure when the server rejects the request.',
+        'Retry forever in the background without telling the user.',
+        'Disable authorization for this endpoint.',
+      ],
+      correctAnswer: 'Rollback the UI state and show a clear failure when the server rejects the request.',
+      explanation: 'Optimistic UI must reconcile with the authoritative server result. On rejection, restore the prior state and communicate the failure so client and server do not drift.',
+    },
+    cybersecurity: {
+      question: `In a ${topic} endpoint, the server reads userId from the request body and updates /users/:userId/settings without comparing it to the authenticated session. What vulnerability is most likely?`,
+      options: [
+        'CSRF only, because all state changes are CSRF.',
+        'IDOR or broken access control because a user can target another user id.',
+        'SQL injection because userId is a string.',
+        'Clickjacking because settings are visible in the browser.',
+      ],
+      correctAnswer: 'IDOR or broken access control because a user can target another user id.',
+      explanation: 'Authorization must be based on the authenticated principal and allowed resource ownership, not a client-supplied user id. The fix is to derive user identity from the session and enforce object-level access checks.',
+    },
+    'data-analytics': {
+      question: `In a ${topic} SQL report, revenue is joined to events on user_id only, while users can have many events per order. The dashboard suddenly overstates revenue. What happened?`,
+      options: [
+        'The join likely multiplied revenue rows because the grain of the tables did not match.',
+        'SUM automatically removes duplicate revenue values.',
+        'The database converted revenue into percentages.',
+        'Window functions are required for every dashboard query.',
+      ],
+      correctAnswer: 'The join likely multiplied revenue rows because the grain of the tables did not match.',
+      explanation: 'Joining facts at incompatible grains can fan out measures. Aggregate to the intended grain first or join on keys that preserve one row per measured entity.',
+    },
+    'data-science': {
+      question: `In a ${topic} notebook, preprocessing is fit on the full dataset before train_test_split, then model accuracy looks unusually high. What is the most likely issue?`,
+      options: [
+        'The test set influenced preprocessing, causing data leakage.',
+        'The model is definitely production-ready.',
+        'The split function removes leakage automatically.',
+        'High accuracy always means low variance.',
+      ],
+      correctAnswer: 'The test set influenced preprocessing, causing data leakage.',
+      explanation: 'Preprocessing steps such as scaling, imputation, or encoding must be fit on training data only. Use a pipeline and evaluate on untouched validation or test data.',
+    },
+    'ai-ml': {
+      question: `In a ${topic} RAG flow, code retrieves chunks after the LLM has already drafted the answer, then appends citations afterward. What will happen here?`,
+      options: [
+        'The answer is grounded because citations exist.',
+        'The model may hallucinate because retrieval did not condition generation.',
+        'Vector databases prevent unsupported claims automatically.',
+        'The citations will rewrite the answer.',
+      ],
+      correctAnswer: 'The model may hallucinate because retrieval did not condition generation.',
+      explanation: 'Retrieved context must be supplied before or during generation so the model can ground its answer. Appending citations after generation creates unsupported citation risk.',
+    },
+  };
+  const scenario = snippets[params.domain] ?? snippets.frontend!;
+  const salt = `${params.domain}:${topic}:top-up:${params.index}:${params.variant}`;
+  return {
+    id: `topup-${hashText(salt).slice(0, 12)}-${params.index + 1}`,
+    type: 'mcq',
+    question: `${scenario.question} Scenario ${params.variant + 1}: choose the strongest answer.`,
+    blank: null,
+    options: scenario.options,
+    correctAnswer: scenario.correctAnswer,
+    explanation: scenario.explanation,
+    difficulty: 'hard',
+    tags,
+  };
+}
+
+function ensurePracticeQuestionCount(
+  questions: PracticeSessionQuestion[],
+  params: { domain: PracticeDomainId; topic: string; targetCount?: number },
+) {
+  const targetCount = params.targetCount ?? 30;
+  const seen = new Set(questions.map((question) => hashText(`${question.question}:${question.correctAnswer}`)));
+  const nextQuestions = [...questions];
+  let variant = 0;
+  while (nextQuestions.length < targetCount) {
+    const topUp = buildPracticeTopUpQuestion({
+      domain: params.domain,
+      topic: params.topic,
+      index: nextQuestions.length,
+      variant,
+    });
+    const topUpHash = hashText(`${topUp.question}:${topUp.correctAnswer}`);
+    if (!seen.has(topUpHash) || variant > targetCount * 2) {
+      seen.add(topUpHash);
+      nextQuestions.push(topUp);
+    }
+    variant += 1;
+  }
+  return nextQuestions.slice(0, targetCount);
+}
+
 function parsePracticeAnswers(value: unknown): PracticeSessionAnswer[] {
   const items = Array.isArray(value) ? value : [];
   return items
@@ -1299,56 +1465,72 @@ async function generatePracticeSessionQuestions(params: {
   const generate = async (retry = false) => {
     await checkAiRateLimit(params.userId, 'practice-session-generation', retry ? 3 : 5);
     const sessionSeed = hashText(`${params.userId}:${params.topic}:${Date.now()}:${retry ? 'retry' : 'initial'}`).slice(0, 16);
-    const generated = await callStructuredModel(
-      `You are a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer creating a 20-question practice session on ${params.topic}. Generate exactly 10 fill-in-the-blank questions and exactly 10 multiple choice questions. Questions must test real engineering judgment, applied knowledge, and practical decision-making. Never generate trivia, memorization-only questions, or competitive programming problems. For fill-in-the-blank, the blank must be a meaningful technical term, decision, or short phrase. For multiple choice, provide exactly four options with one correct answer and three plausible distractors. Return only valid JSON.`,
-      JSON.stringify({
-        domain: PRACTICE_DOMAIN_LABELS[params.domain],
-        topic: params.topic,
-        userLevel: params.level || 'intermediate',
-        repoContext,
-        sessionSeed,
-        previouslySeenQuestionTexts: seenQuestions,
-        retry,
-        schema: {
-          topic: 'string',
-          domain: 'string',
-          totalQuestions: 20,
-          questions: [
-            {
-              id: 'string',
-              type: 'fill-blank or mcq',
-              question: 'string',
-              blank: 'string or null',
-              options: 'array of 4 strings or null',
-              correctAnswer: 'string',
-              explanation: 'string',
-              difficulty: 'easy or medium or hard',
-              tags: ['string'],
-            },
-          ],
+    let generatedQuestions: PracticeSessionQuestion[] = [];
+    try {
+      const generated = await callStructuredModel(
+        `You are DeepSeek acting as a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer creating a 30-question practice session on ${params.topic}. Generate exactly 10 fill-in-the-blank questions, exactly 10 standard multiple choice questions, and exactly 10 hard multiple choice questions built around realistic coding paragraphs. The final 10 hard questions must each include a compact code snippet or pseudocode paragraph for this domain/topic and ask what will happen, what bug exists, or what the best fix is. Questions must test real engineering judgment, applied knowledge, and practical decision-making. Never generate trivia, memorization-only questions, or competitive programming problems. For fill-in-the-blank, the blank must be a meaningful technical term, decision, or short phrase. For multiple choice, provide exactly four options with one correct answer and three plausible distractors. Return only valid JSON.`,
+        JSON.stringify({
+          domain: PRACTICE_DOMAIN_LABELS[params.domain],
+          topic: params.topic,
+          userLevel: params.level || 'intermediate',
+          repoContext,
+          sessionSeed,
+          previouslySeenQuestionTexts: seenQuestions,
+          retry,
+          schema: {
+            topic: 'string',
+            domain: 'string',
+            totalQuestions: 30,
+            questions: [
+              {
+                id: 'string',
+                type: 'fill-blank or mcq',
+                question: 'string',
+                blank: 'string or null',
+                options: 'array of 4 strings or null',
+                correctAnswer: 'string',
+                explanation: 'string',
+                difficulty: 'easy or medium or hard',
+                tags: ['string'],
+              },
+            ],
+          },
+        }),
+        (payload) => {
+          const source = parseJsonRecord(payload);
+          const items = Array.isArray(source.questions) ? source.questions : [];
+          return items
+            .map((item, index) => normalizePracticeQuestionPayload(item, index, params.topic))
+            .filter((item): item is PracticeSessionQuestion => Boolean(item));
         },
-      }),
-      (payload) => {
-        const source = parseJsonRecord(payload);
-        const items = Array.isArray(source.questions) ? source.questions : [];
-        return items
-          .map((item, index) => normalizePracticeQuestionPayload(item, index, params.topic))
-          .filter((item): item is PracticeSessionQuestion => Boolean(item));
-      },
-      { maxTokens: 3200, timeoutMs: 45000, model: 'deepseek/deepseek-chat', temperature: 0.35 },
-    );
-    const questions = generated.result.slice(0, 20);
+        { maxTokens: 5600, timeoutMs: 65000, model: 'deepseek/deepseek-chat', temperature: 0.35 },
+      );
+      generatedQuestions = generated.result;
+    } catch (error) {
+      console.warn('Practice session model generation failed; using deterministic 30-question fallback.', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const questions = ensurePracticeQuestionCount(generatedQuestions, {
+      domain: params.domain,
+      topic: params.topic,
+      targetCount: 30,
+    });
     const questionHashes = questions.map((question) => hashText(`${question.question}:${question.correctAnswer}`));
     const duplicateCount = questionHashes.length - new Set(questionHashes).size;
     const repeatCount = questionHashes.filter((hash) => seenHashes.has(hash)).length;
-    if (!retry && (questions.length < 20 || duplicateCount > 0 || repeatCount > 4)) {
+    if (!retry && (questions.length < 30 || duplicateCount > 0 || repeatCount > 4)) {
       return generate(true);
     }
     return questions;
   };
 
-  const questions = await generate(false);
-  if (questions.length < 20) {
+  const questions = ensurePracticeQuestionCount(await generate(false), {
+    domain: params.domain,
+    topic: params.topic,
+    targetCount: 30,
+  });
+  if (questions.length !== 30) {
     throw new Error('Unable to generate a complete practice session right now.');
   }
 
@@ -2976,6 +3158,8 @@ function getPeriodEnd(interval: BillingInterval) {
   const date = new Date();
   if (interval === 'annual') {
     date.setFullYear(date.getFullYear() + 1);
+  } else if (interval === 'semiannual') {
+    date.setMonth(date.getMonth() + 6);
   } else {
     date.setMonth(date.getMonth() + 1);
   }
@@ -3180,6 +3364,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
           plan: 'free',
           name: 'Free',
           monthly: { amountPaise: 0, displayPrice: '₹0' },
+          semiannual: { amountPaise: 0, displayPrice: '₹0' },
           annual: { amountPaise: 0, displayPrice: '₹0' },
           limits: PLAN_LIMITS.free,
         },
@@ -3187,15 +3372,16 @@ export async function createApp(options: { listen?: boolean } = {}) {
           plan: 'pro',
           name: 'Pro',
           monthly: PLAN_PRICING.pro.monthly,
+          semiannual: PLAN_PRICING.pro.semiannual,
           annual: PLAN_PRICING.pro.annual,
           limits: PLAN_LIMITS.pro,
         },
         team: {
           plan: 'team',
-          name: 'Team',
+          name: 'Long-Term',
           monthly: PLAN_PRICING.team.monthly,
+          semiannual: PLAN_PRICING.team.semiannual,
           annual: PLAN_PRICING.team.annual,
-          minSeats: 3,
           limits: PLAN_LIMITS.team,
         },
       },
@@ -3222,7 +3408,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
     const user = (request as AuthedRequest).user!;
     const plan = normalizeBillingPlan(request.body?.plan);
     const billingInterval = normalizeBillingInterval(request.body?.billingInterval);
-    const seats = plan === 'team' ? Math.max(3, Number(request.body?.seats ?? 3)) : 1;
+    const seats = 1;
 
     if (plan === 'free') {
       await upsertSubscription({
@@ -3325,7 +3511,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
       const plan = normalizeBillingPlan(order.plan);
       const billingInterval = normalizeBillingInterval(order.billing_interval);
-      const seats = Math.max(plan === 'team' ? 3 : 1, Number(order.seats ?? 1));
+      const seats = Math.max(1, Number(order.seats ?? 1));
 
       await db.prepare(`
         UPDATE billing_orders

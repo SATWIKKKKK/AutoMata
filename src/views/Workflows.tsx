@@ -124,12 +124,8 @@ export default function Workflows() {
               <p className="text-ui-label text-blueprint-muted">Practice Tracks</p>
               <h1 className="mt-2 font-serif text-[clamp(2.2rem,4vw,4rem)] leading-tight text-primary">{domainLabel}</h1>
               <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
-                Search any topic, validate it against your selected domain, and generate a fresh 20-question session on demand.
+                Search any topic, validate it against your selected domain, and generate a fresh 30-question session on demand.
               </p>
-            </div>
-            <div className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] px-4 py-3">
-              <p className="text-ui-label text-blueprint-muted">Mode</p>
-              <p className="mt-1 text-headline-md text-primary not-italic">Search-driven</p>
             </div>
           </div>
 
@@ -244,7 +240,7 @@ export default function Workflows() {
                   {session.weakTags?.length ? (
                     <div className="mt-4 flex flex-wrap gap-2">
                       {(session.weakTags ?? []).slice(0, 3).map((tag) => (
-                        <span key={`${session.id}-${tag}`} className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-ui-label text-primary">{tag}</span>
+                        <span key={`${session.id}-${tag}`} className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-ui-label text-amber-950 dark:border-amber-300/50 dark:bg-amber-500/20 dark:text-amber-100">{tag}</span>
                       ))}
                     </div>
                   ) : null}

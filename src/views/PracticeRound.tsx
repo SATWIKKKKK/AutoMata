@@ -39,6 +39,8 @@ export default function PracticeRound() {
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [timerAlertOpen, setTimerAlertOpen] = useState(false);
+  const [submitConfirmOpen, setSubmitConfirmOpen] = useState(false);
 
   const currentQuestion = session?.questions[currentQuestionIndex] ?? null;
   const confirmedAnswer = currentQuestion ? answerMap[currentQuestion.id]?.answer ?? '' : '';
@@ -69,6 +71,12 @@ export default function PracticeRound() {
       const localDraft = readLocalDraft<LocalPracticeDraft>('practice-session', sessionId);
       const startingAnswers = localDraft?.payload.answers.length ? localDraft.payload.answers : result.data.answers;
       setSession(result.data);
+      try {
+        window.localStorage.setItem('repoid-active-practice-session', result.data.id);
+        setTimerAlertOpen(window.localStorage.getItem(`repoid-practice-timer-started:${result.data.id}`) !== 'true');
+      } catch {
+        setTimerAlertOpen(true);
+      }
       setAnswerMap(toAnswerMap(startingAnswers));
       setCurrentQuestionIndex(Math.min(localDraft?.payload.currentQuestionIndex ?? 0, Math.max(result.data.questions.length - 1, 0)));
     });
@@ -123,6 +131,7 @@ export default function PracticeRound() {
 
   const handleCompleteSession = async () => {
     if (!session || submitting) return;
+    setSubmitConfirmOpen(false);
     setSubmitting(true);
     setError(null);
     const timeSpentSeconds = Math.max(0, Math.round((Date.now() - new Date(session.generatedAt).getTime()) / 1000));
@@ -135,7 +144,35 @@ export default function PracticeRound() {
       setError(result.error);
       return;
     }
+    try {
+      window.localStorage.removeItem('repoid-active-practice-session');
+      window.localStorage.removeItem(`repoid-round-leaves:practice-session:${session.id}`);
+    } catch {
+      // Ignore local cleanup failures.
+    }
     navigate(`/results/practice/${result.data.id}`, { replace: true });
+  };
+
+  useEffect(() => {
+    if (!session || submitting) return;
+    try {
+      const leaveCount = Number(window.localStorage.getItem(`repoid-round-leaves:practice-session:${session.id}`) ?? 0);
+      if (leaveCount >= 5) {
+        void handleCompleteSession();
+      }
+    } catch {
+      // If localStorage cannot be read, keep the server-backed session resumable.
+    }
+  }, [session, submitting]);
+
+  const startTimerAlert = () => {
+    if (!session) return;
+    try {
+      window.localStorage.setItem(`repoid-practice-timer-started:${session.id}`, 'true');
+    } catch {
+      // The modal is only a local acknowledgement.
+    }
+    setTimerAlertOpen(false);
   };
 
   if (loading) {
@@ -162,6 +199,29 @@ export default function PracticeRound() {
     );
   }
 
+  if (timerAlertOpen) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+        <div className="relative z-10 w-full max-w-lg rounded-2xl border border-blueprint-line bg-card p-6 text-center shadow-2xl">
+          <p className="text-ui-label text-blueprint-muted">Timer Start Alert</p>
+          <h1 className="mt-2 text-headline-md text-primary not-italic">Your practice timer is running.</h1>
+          <p className="mt-3 text-body-md text-blueprint-muted">
+            Closing or switching away will keep the timer active. Your answers and question position are saved, but leaving 5 times will end the practice round and send you to results.
+          </p>
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
+            <button type="button" onClick={() => navigate(`/practice-tracks?search=${encodeURIComponent(session.topic)}`)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary">
+              Go Back
+            </button>
+            <button type="button" onClick={startTimerAlert} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">
+              Start Timer
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <RoundShell
       attemptId={session.id}
@@ -170,6 +230,7 @@ export default function PracticeRound() {
       startedAt={session.generatedAt}
       counter={`Q${currentQuestionIndex + 1} of ${session.totalQuestions}`}
       onEndEarly={() => { void handleCompleteSession(); }}
+      onMaxVisibilityLeaves={() => { void handleCompleteSession(); }}
     >
       <div className="mx-auto w-full max-w-360 px-4 py-6 sm:px-6 lg:px-8">
         <div className="rounded-3xl border border-blueprint-line bg-card p-5 shadow-[0_22px_44px_rgba(0,0,0,0.05)]">
@@ -178,7 +239,7 @@ export default function PracticeRound() {
               <p className="text-ui-label text-blueprint-muted">Topic Session</p>
               <h1 className="mt-2 font-serif text-[clamp(2rem,3vw,3rem)] leading-tight text-primary">{session.topic}</h1>
               <p className="mt-3 max-w-3xl text-body-md text-blueprint-muted">
-                Search-driven practice: confirm each answer when ready, move freely between questions, and submit whenever you want your score.
+                Confirm each answer when ready, move freely between questions, and submit whenever you want your score.
               </p>
             </div>
             <div className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] px-4 py-3 text-right">
@@ -192,6 +253,8 @@ export default function PracticeRound() {
           <div className="mt-5 flex flex-wrap gap-2">
             {session.questions.map((question, index) => {
               const answered = Boolean(answerMap[question.id]);
+              const answer = answerMap[question.id]?.answer ?? '';
+              const answeredCorrectly = answered && isPracticeAnswerCorrect(question, answer);
               const active = currentQuestion.id === question.id;
               return (
                 <button
@@ -202,7 +265,9 @@ export default function PracticeRound() {
                     active
                       ? 'border-primary bg-primary text-white'
                       : answered
-                        ? 'border-primary/40 bg-[#f3ece7] text-primary'
+                        ? answeredCorrectly
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                          : 'border-red-300 bg-red-50 text-red-700'
                         : 'border-blueprint-line bg-white text-blueprint-muted'
                   }`}
                   aria-label={`Go to question ${index + 1}`}
@@ -308,16 +373,29 @@ export default function PracticeRound() {
                 <button
                   type="button"
                   disabled={submitting}
-                  onClick={() => { void handleCompleteSession(); }}
+                  onClick={() => setSubmitConfirmOpen(true)}
                   className="rounded-full border border-primary px-6 py-2.5 text-ui-label text-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {submitting ? 'Submitting...' : answeredCount === session.totalQuestions ? 'Submit Session' : 'End Session'}
+                  {submitting ? 'Submitting...' : currentQuestionIndex === session.questions.length - 1 ? 'End Session & See Results' : answeredCount === session.totalQuestions ? 'Submit Session' : 'End Session'}
                 </button>
               </div>
             </div>
           </article>
         </div>
       </div>
+      {submitConfirmOpen ? (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-card p-6 shadow-2xl">
+            <p className="text-ui-label text-blueprint-muted">End Session</p>
+            <h2 className="mt-2 text-headline-md text-primary not-italic">Submit and see results?</h2>
+            <p className="mt-2 text-body-md text-blueprint-muted">Your current confirmed answers will be evaluated immediately.</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => setSubmitConfirmOpen(false)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary">Stay</button>
+              <button type="button" onClick={() => { void handleCompleteSession(); }} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">End Session</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </RoundShell>
   );
 }

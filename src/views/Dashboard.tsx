@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { getGithubScanJob, listGithubRepos } from '../lib/githubRepos';
 import { fetchLatestRoundAttemptSummary, type StoredRoundAttempt } from '../lib/questionBankApi';
 import { fetchPracticeSessions, type PracticeSessionSummary } from '../lib/practiceSessions';
+import { BackgroundRippleEffect } from '../components/ui/background-ripple-effect';
 import {
   COMPANY_TYPE_LABELS,
   DOMAIN_LABELS,
@@ -105,6 +106,7 @@ export default function Dashboard() {
   const [attempts, setAttempts] = useState<StoredRoundAttempt[]>([]);
   const [practiceSessions, setPracticeSessions] = useState<PracticeSessionSummary[]>([]);
   const [quickStartOpen, setQuickStartOpen] = useState(false);
+  const [activePracticeId, setActivePracticeId] = useState<string | null>(null);
   const [quickRoute, setQuickRoute] = useState('/scenario-round');
   const plan = workspace.prepPlan;
   const domain = workspace.selections.domain;
@@ -186,6 +188,14 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    try {
+      setActivePracticeId(window.localStorage.getItem('repoid-active-practice-session'));
+    } catch {
+      setActivePracticeId(null);
+    }
+  }, []);
+
+  useEffect(() => {
     let ignore = false;
     void fetchLatestRoundAttemptSummary(domain).then((result) => {
       if (ignore) return;
@@ -215,6 +225,9 @@ export default function Dashboard() {
   return (
     <div className="min-h-full bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+      <div className="pointer-events-none fixed inset-0 opacity-20">
+        <BackgroundRippleEffect rows={10} cols={28} cellSize={66} />
+      </div>
       <main className="relative z-10 mx-auto flex w-full max-w-[1320px] flex-col gap-6 px-4 pb-14 pt-6 sm:px-6 lg:px-10">
         <section className="border-b border-blueprint-line/80 pb-6">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
@@ -408,6 +421,31 @@ export default function Dashboard() {
           </div>
         </section>
 
+        <section className="surface-card" id="dashboard-pricing">
+          <div className="flex flex-col gap-4 border-b border-blueprint-line pb-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-ui-label text-blueprint-muted">Pricing</p>
+              <h2 className="mt-1 text-headline-md text-primary not-italic">Plans for every prep window</h2>
+            </div>
+            <button type="button" onClick={() => navigate('/pricing')} className="w-fit rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">
+              Open Billing
+            </button>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {[
+              ['Free', '₹0', 'Start with daily question-bank practice and one repo scan.'],
+              ['Monthly', '₹29/mo', 'Unlock serious prep for short interview sprints.'],
+              ['Long-Term', '₹149 / 6 months or ₹299 / year', 'Keep access through placement season and repeated rounds.'],
+            ].map(([name, price, body]) => (
+              <button key={name} type="button" onClick={() => navigate('/pricing')} className="rounded-xl border border-blueprint-line bg-[#fbf9f9] p-4 text-left transition-colors hover:bg-white">
+                <p className="text-ui-label text-blueprint-muted">{name}</p>
+                <p className="mt-2 text-headline-md text-primary not-italic">{price}</p>
+                <p className="mt-2 text-body-md text-blueprint-muted">{body}</p>
+              </button>
+            ))}
+          </div>
+        </section>
+
         <footer className="flex flex-col items-center justify-between gap-4 border-t border-blueprint-line py-6 text-sm text-blueprint-muted sm:flex-row">
           <div className="flex flex-wrap justify-center gap-4">
             <button type="button" onClick={() => navigate('/privacy')} className="hover:text-primary">Privacy Policy</button>
@@ -444,6 +482,24 @@ export default function Dashboard() {
               ))}
             </div>
             <button type="button" onClick={startQuickRound} className="mt-6 w-full rounded-full bg-primary px-5 py-3 text-ui-label text-white">Start</button>
+          </div>
+        </div>
+      ) : null}
+
+      {activePracticeId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-card p-6 text-center shadow-2xl">
+            <p className="text-ui-label text-blueprint-muted">Practice In Progress</p>
+            <h2 className="mt-2 text-headline-md text-primary not-italic">Resume your active session?</h2>
+            <p className="mt-3 text-body-md text-blueprint-muted">Your timer kept running and your saved answers will load from the same question.</p>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
+              <button type="button" onClick={() => setActivePracticeId(null)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary">
+                Later
+              </button>
+              <button type="button" onClick={() => navigate(`/round/practice/${activePracticeId}`)} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">
+                Resume Session
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

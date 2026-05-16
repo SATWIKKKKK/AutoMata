@@ -19,8 +19,8 @@ export default function Landing({ onViewChange }: LandingProps) {
   return (
     <div className="min-h-screen bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
-      <div className="pointer-events-none fixed inset-0 opacity-25">
-        <BackgroundRippleEffect rows={10} cols={30} cellSize={56} />
+      <div className="pointer-events-none fixed inset-0 opacity-30">
+        <BackgroundRippleEffect rows={11} cols={32} cellSize={68} />
       </div>
 
       <nav className="sticky top-3 z-40 mx-3 rounded-xl border border-blueprint-line bg-white/85 backdrop-blur-md sm:top-4 sm:mx-4">
@@ -29,9 +29,6 @@ export default function Landing({ onViewChange }: LandingProps) {
             Repoid
           </button>
           <div className="flex items-center gap-3">
-            <button type="button" onClick={() => onViewChange('pricing')} className="hidden text-ui-label text-blueprint-muted transition-colors hover:text-primary sm:inline-flex">
-              Pricing
-            </button>
             <button type="button" onClick={() => onViewChange('auth')} className="text-ui-label text-primary transition-colors hover:text-blueprint-muted">
               Sign In
             </button>
@@ -47,8 +44,8 @@ export default function Landing({ onViewChange }: LandingProps) {
       </nav>
 
       <main className="relative z-10 mx-auto flex w-full max-w-360 flex-col px-4 pb-20 sm:px-8 lg:px-12">
-        <section className="flex min-h-[calc(100vh-3rem)] flex-col items-center justify-center text-center sm:min-h-[calc(100vh-3.5rem)]">
-          <h1 className="mx-auto max-w-3xl text-center font-serif leading-[1.08] text-[clamp(2.5rem,6.8vw,72px)] text-primary">
+        <section className="flex min-h-[calc(100vh-3rem)] flex-col items-start justify-center text-left sm:min-h-[calc(100vh-3.5rem)]">
+          <h1 className="max-w-3xl text-left font-serif leading-[1.08] text-[clamp(2.5rem,6.8vw,72px)] text-primary">
             Practice the rounds you are actually going to face.
           </h1>
           <p className="mt-6 max-w-xl text-body-lg text-blueprint-muted">
@@ -57,7 +54,7 @@ export default function Landing({ onViewChange }: LandingProps) {
           <div className="mt-8 w-full max-w-2xl">
             <GlobalSearch />
           </div>
-          <div className="mt-7 flex flex-wrap justify-center gap-4">
+          <div className="mt-7 flex flex-wrap justify-start gap-4">
             <button
               type="button"
               onClick={() => onViewChange(isAuthed ? 'dashboard' : 'signup')}
