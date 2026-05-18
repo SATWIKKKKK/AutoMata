@@ -1,11 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bookmark, BookmarkCheck, History, LoaderCircle, Mic, Square } from 'lucide-react';
+import { Bookmark, BookmarkCheck, History, LoaderCircle, Mic, MicOff } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundDomainGate from '../components/RoundDomainGate';
 import RoundShell from '../components/RoundShell';
 import { DOMAIN_LABELS } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import {
+  MOCK_ANSWER_PHASE_SECONDS,
+  MOCK_INTERVIEW_QUESTION_COUNT,
+  MOCK_READING_PHASE_SECONDS,
+  MOCK_TOTAL_DURATION_MINUTES,
   fetchMockOverview,
   fetchMockInterview,
   finishMockInterview,
@@ -17,6 +21,7 @@ import {
   type MockInterviewType,
   type MockLevel,
   type MockPersona,
+  type MockQuestionType,
 } from '../lib/mockInterview';
 import { View } from '../App';
 
@@ -62,6 +67,41 @@ function mockHistoryScoreLabel(item: MockInterviewHistoryItem) {
   return `${item.score}/10`;
 }
 
+function hasSubmittedMockAnswer(answer: string | null | undefined) {
+  return String(answer ?? '').trim().length > 0;
+}
+
+function formatCountdown(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function formatElapsedDuration(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+function questionTypeBadgeClass(type: MockQuestionType | null | undefined) {
+  if (type === 'technical') return 'border-sky-200 bg-sky-50 text-sky-700';
+  if (type === 'design') return 'border-violet-200 bg-violet-50 text-violet-700';
+  if (type === 'behavioral') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (type === 'situational') return 'border-amber-200 bg-amber-50 text-amber-700';
+  return 'border-blueprint-line bg-blueprint-bg text-primary';
+}
+
+function questionTypeLabel(type: MockQuestionType | null | undefined) {
+  if (type === 'technical') return 'TECHNICAL';
+  if (type === 'design') return 'DESIGN';
+  if (type === 'behavioral') return 'BEHAVIORAL';
+  if (type === 'situational') return 'SITUATIONAL';
+  return 'QUESTION';
+}
+
+type QuestionPhase = 'reading' | 'answering' | 'submitting';
+type FinishStage = 'idle' | 'complete' | 'generating';
+
 export default function TerminalPage(_props: TerminalPageProps) {
   const navigate = useNavigate();
   const params = useParams<{ interviewId?: string }>();
@@ -84,18 +124,247 @@ export default function TerminalPage(_props: TerminalPageProps) {
   const [loading, setLoading] = useState(false);
   const [elapsedLoading, setElapsedLoading] = useState(0);
   const [submitting, setSubmitting] = useState(false);
-  const [finishing, setFinishing] = useState(false);
+  const [phase, setPhase] = useState<QuestionPhase>('reading');
+  const [finishStage, setFinishStage] = useState<FinishStage>('idle');
   const [error, setError] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [questionVisible, setQuestionVisible] = useState(false);
+  const [completedTimeTakenSeconds, setCompletedTimeTakenSeconds] = useState(0);
   const recognitionRef = useRef<any>(null);
+  const draftRef = useRef('');
+  const readingCountdownRef = useRef<HTMLSpanElement | null>(null);
+  const readingUnlockRef = useRef<HTMLSpanElement | null>(null);
+  const readingOverlayCountdownRef = useRef<HTMLSpanElement | null>(null);
+  const answerCountdownRef = useRef<HTMLSpanElement | null>(null);
+  const answerTimerShellRef = useRef<HTMLDivElement | null>(null);
+  const readingIntervalRef = useRef<number | null>(null);
+  const answerIntervalRef = useRef<number | null>(null);
+  const readingSecondsRemainingRef = useRef(MOCK_READING_PHASE_SECONDS);
+  const answerSecondsRemainingRef = useRef(MOCK_ANSWER_PHASE_SECONDS);
+  const finishDelayRef = useRef<number | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
+  const questionFadeFrameRef = useRef<number | null>(null);
+  const autoVoiceAllowedRef = useRef(true);
 
   const question = interview?.questions[currentIndex] ?? null;
   const currentResponse = question ? interview?.responses.find((item) => item.questionId === question.id) ?? null : null;
   const meta = personaMeta(interview?.persona ?? persona ?? 'alex');
   const setupReady = Boolean(level && interviewType && persona);
-  const answeredCount = interview?.responses.length ?? 0;
+  const answeredCount = interview?.responses.filter((item) => hasSubmittedMockAnswer(item.answer)).length ?? 0;
   const voiceSupported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
   const overviewHistory = overview?.history ?? [];
+
+  const stopListening = useCallback(() => {
+    recognitionRef.current?.stop?.();
+    recognitionRef.current = null;
+    setListening(false);
+  }, []);
+
+  const startListening = useCallback(() => {
+    if (!voiceSupported || listening) return;
+    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!Recognition) return;
+    const recognition = new Recognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        if (event.results[index].isFinal) {
+          transcript += event.results[index][0].transcript;
+        }
+      }
+      const normalizedTranscript = transcript.trim();
+      if (!normalizedTranscript) return;
+      setDraft((current) => {
+        const nextValue = `${current}${current ? ' ' : ''}${normalizedTranscript}`.trim();
+        draftRef.current = nextValue;
+        return nextValue;
+      });
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    setListening(true);
+    recognition.start();
+  }, [listening, phase, voiceSupported]);
+
+  const clearReadingTimer = useCallback(() => {
+    if (readingIntervalRef.current !== null) {
+      window.clearInterval(readingIntervalRef.current);
+      readingIntervalRef.current = null;
+    }
+  }, []);
+
+  const clearAnswerTimer = useCallback(() => {
+    if (answerIntervalRef.current !== null) {
+      window.clearInterval(answerIntervalRef.current);
+      answerIntervalRef.current = null;
+    }
+  }, []);
+
+  const clearPhaseTimers = useCallback(() => {
+    clearReadingTimer();
+    clearAnswerTimer();
+  }, [clearAnswerTimer, clearReadingTimer]);
+
+  const clearFinishDelay = useCallback(() => {
+    if (finishDelayRef.current !== null) {
+      window.clearTimeout(finishDelayRef.current);
+      finishDelayRef.current = null;
+    }
+  }, []);
+
+  const clearToastTimeout = useCallback(() => {
+    if (toastTimeoutRef.current !== null) {
+      window.clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = null;
+    }
+  }, []);
+
+  const setReadingCountdown = useCallback((secondsRemaining: number) => {
+    const nextValue = String(Math.max(0, secondsRemaining));
+    if (readingCountdownRef.current) readingCountdownRef.current.textContent = nextValue;
+    if (readingUnlockRef.current) readingUnlockRef.current.textContent = nextValue;
+    if (readingOverlayCountdownRef.current) readingOverlayCountdownRef.current.textContent = nextValue;
+  }, []);
+
+  const setAnswerCountdown = useCallback((secondsRemaining: number) => {
+    if (answerCountdownRef.current) {
+      answerCountdownRef.current.textContent = formatCountdown(Math.max(0, secondsRemaining));
+    }
+    if (!answerTimerShellRef.current) return;
+    const toneClasses = secondsRemaining <= 30
+      ? 'border-red-200 bg-red-50 text-red-700 animate-pulse'
+      : secondsRemaining <= 90
+        ? 'border-amber-200 bg-amber-50 text-amber-700'
+        : 'border-blueprint-line bg-blueprint-bg text-primary';
+    answerTimerShellRef.current.className = `rounded-2xl border px-5 py-4 text-center transition-all ${toneClasses}`;
+  }, []);
+
+  const finishInterview = useCallback(async (sourceInterview?: MockInterviewState) => {
+    const activeInterview = sourceInterview ?? interview;
+    if (!activeInterview || finishStage !== 'idle') return;
+    clearPhaseTimers();
+    stopListening();
+    clearFinishDelay();
+    clearToastTimeout();
+    setCompletedTimeTakenSeconds(Math.max(0, Math.floor((Date.now() - new Date(activeInterview.startedAt).getTime()) / 1000)));
+    setFinishStage('complete');
+    finishDelayRef.current = window.setTimeout(() => {
+      setFinishStage('generating');
+      setElapsedLoading(0);
+      void finishMockInterview(activeInterview.id).then((result) => {
+        setFinishStage('idle');
+        if (result.ok === false) {
+          setError(result.error);
+          return;
+        }
+        navigate(`/results/mock/${encodeURIComponent(activeInterview.id)}`, { replace: true });
+      });
+    }, 2_000);
+  }, [clearFinishDelay, clearPhaseTimers, clearToastTimeout, finishStage, interview, navigate, stopListening]);
+
+  const submitAnswer = useCallback(async (options: { autoSubmitted?: boolean } = {}) => {
+    if (!interview || !question || submitting || finishStage !== 'idle') return;
+    clearPhaseTimers();
+    stopListening();
+    setSubmitting(true);
+    setPhase('submitting');
+    setError(null);
+    const timeSpentSeconds = Math.max(0, MOCK_ANSWER_PHASE_SECONDS - answerSecondsRemainingRef.current);
+    const result = await respondToMockQuestion(interview.id, {
+      questionId: question.id,
+      answer: draftRef.current,
+      followUpAnswer: followUpDraft.trim() || undefined,
+      timeSpentSeconds,
+    });
+    setSubmitting(false);
+    if (result.ok === false) {
+      setError(result.error);
+      setPhase('answering');
+      setAnswerCountdown(Math.max(1, answerSecondsRemainingRef.current));
+      if (answerSecondsRemainingRef.current > 0) {
+        answerIntervalRef.current = window.setInterval(() => {
+          answerSecondsRemainingRef.current = Math.max(0, answerSecondsRemainingRef.current - 1);
+          setAnswerCountdown(answerSecondsRemainingRef.current);
+          if (answerSecondsRemainingRef.current <= 0) {
+            clearAnswerTimer();
+            void submitAnswer({ autoSubmitted: true });
+          }
+        }, 1000);
+      }
+      return;
+    }
+
+    const updatedInterview = result.data.interview;
+    const completed = updatedInterview.responses.length >= updatedInterview.questions.length || currentIndex >= updatedInterview.questions.length - 1;
+    setInterview(updatedInterview);
+    setDraft('');
+    draftRef.current = '';
+    setFollowUpDraft('');
+
+    const advance = () => {
+      if (completed) {
+        void finishInterview(updatedInterview);
+        return;
+      }
+      setCurrentIndex(updatedInterview.currentQuestionIndex);
+    };
+
+    if (options.autoSubmitted) {
+      clearToastTimeout();
+      setToastMessage("Time's up — answer recorded");
+      toastTimeoutRef.current = window.setTimeout(() => {
+        setToastMessage(null);
+        advance();
+      }, 2_000);
+      return;
+    }
+
+    advance();
+  }, [clearAnswerTimer, clearPhaseTimers, clearToastTimeout, currentIndex, finishInterview, finishStage, followUpDraft, interview, question, setAnswerCountdown, stopListening, submitting]);
+
+  const beginAnswerPhase = useCallback(() => {
+    clearPhaseTimers();
+    setPhase('answering');
+    answerSecondsRemainingRef.current = MOCK_ANSWER_PHASE_SECONDS;
+    setAnswerCountdown(answerSecondsRemainingRef.current);
+    if (voiceSupported && autoVoiceAllowedRef.current) {
+      startListening();
+    }
+    answerIntervalRef.current = window.setInterval(() => {
+      answerSecondsRemainingRef.current = Math.max(0, answerSecondsRemainingRef.current - 1);
+      setAnswerCountdown(answerSecondsRemainingRef.current);
+      if (answerSecondsRemainingRef.current <= 0) {
+        clearAnswerTimer();
+        void submitAnswer({ autoSubmitted: true });
+      }
+    }, 1000);
+  }, [clearAnswerTimer, clearPhaseTimers, setAnswerCountdown, startListening, submitAnswer, voiceSupported]);
+
+  const beginReadingPhase = useCallback(() => {
+    clearPhaseTimers();
+    stopListening();
+    autoVoiceAllowedRef.current = true;
+    setPhase('reading');
+    readingSecondsRemainingRef.current = MOCK_READING_PHASE_SECONDS;
+    setReadingCountdown(readingSecondsRemainingRef.current);
+    setQuestionVisible(false);
+    if (questionFadeFrameRef.current !== null) {
+      window.cancelAnimationFrame(questionFadeFrameRef.current);
+    }
+    questionFadeFrameRef.current = window.requestAnimationFrame(() => setQuestionVisible(true));
+    readingIntervalRef.current = window.setInterval(() => {
+      readingSecondsRemainingRef.current = Math.max(0, readingSecondsRemainingRef.current - 1);
+      setReadingCountdown(readingSecondsRemainingRef.current);
+      if (readingSecondsRemainingRef.current <= 0) {
+        clearReadingTimer();
+        beginAnswerPhase();
+      }
+    }, 1000);
+  }, [beginAnswerPhase, clearPhaseTimers, clearReadingTimer, setReadingCountdown, stopListening]);
 
   useEffect(() => {
     if (!interviewId) return undefined;
@@ -109,13 +378,17 @@ export default function TerminalPage(_props: TerminalPageProps) {
         setError(result.error);
         return;
       }
+      if (result.data.status === 'completed') {
+        navigate(`/results/mock/${encodeURIComponent(result.data.id)}`, { replace: true });
+        return;
+      }
       setInterview(result.data);
       setCurrentIndex(pickNextIndex(result.data));
     });
     return () => {
       ignore = true;
     };
-  }, [interviewId]);
+  }, [interviewId, navigate]);
 
   useEffect(() => {
     if (!domain || interviewId) return undefined;
@@ -144,17 +417,34 @@ export default function TerminalPage(_props: TerminalPageProps) {
   }, [interviewId]);
 
   useEffect(() => {
-    if (!loading && !finishing) return undefined;
+    if (!loading && finishStage !== 'generating') return undefined;
     const started = Date.now();
     const interval = window.setInterval(() => setElapsedLoading(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => window.clearInterval(interval);
-  }, [finishing, loading]);
+  }, [finishStage, loading]);
 
   useEffect(() => {
     if (!question) return;
     setDraft(currentResponse?.answer ?? '');
+    draftRef.current = currentResponse?.answer ?? '';
     setFollowUpDraft(currentResponse?.followUpAnswer ?? '');
   }, [currentResponse?.answer, currentResponse?.followUpAnswer, question?.id]);
+
+  useEffect(() => {
+    if (!interview || !question || currentResponse || finishStage !== 'idle') return undefined;
+    beginReadingPhase();
+    return undefined;
+  }, [beginReadingPhase, currentResponse, finishStage, interview, question]);
+
+  useEffect(() => () => {
+    clearPhaseTimers();
+    clearFinishDelay();
+    clearToastTimeout();
+    stopListening();
+    if (questionFadeFrameRef.current !== null) {
+      window.cancelAnimationFrame(questionFadeFrameRef.current);
+    }
+  }, [clearFinishDelay, clearPhaseTimers, clearToastTimeout, stopListening]);
 
   const startInterview = useCallback(async () => {
     if (!level || !interviewType || !persona || loading) return;
@@ -194,69 +484,6 @@ export default function TerminalPage(_props: TerminalPageProps) {
     }
     navigate(`/round/mock/${encodeURIComponent(historyItem.id)}`);
   }, [navigate]);
-
-  const submitAnswer = async () => {
-    if (!interview || !question || !draft.trim() || submitting) return;
-    setSubmitting(true);
-    setError(null);
-    const result = await respondToMockQuestion(interview.id, {
-      questionId: question.id,
-      answer: draft,
-      followUpAnswer: followUpDraft,
-    });
-    setSubmitting(false);
-    if (result.ok === false) {
-      setError(result.error);
-      return;
-    }
-    setInterview(result.data.interview);
-  };
-
-  const finishInterview = useCallback(async () => {
-    if (!interview || finishing) return;
-    setFinishing(true);
-    setElapsedLoading(0);
-    const result = await finishMockInterview(interview.id);
-    setFinishing(false);
-    if (result.ok === false) {
-      setError(result.error);
-      return;
-    }
-    navigate(`/results/mock/${encodeURIComponent(interview.id)}`, { replace: true });
-  }, [finishing, interview, navigate]);
-
-  const nextQuestion = () => {
-    if (!interview) return;
-    if (currentIndex >= interview.questions.length - 1) {
-      void finishInterview();
-      return;
-    }
-    setCurrentIndex((index) => index + 1);
-  };
-
-  const startListening = () => {
-    if (!voiceSupported || listening) return;
-    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    const recognition = new Recognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.onresult = (event: any) => {
-      let transcript = '';
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        transcript += event.results[index][0].transcript;
-      }
-      if (transcript.trim()) setDraft((current) => `${current}${current ? ' ' : ''}${transcript.trim()}`);
-    };
-    recognition.onend = () => setListening(false);
-    recognitionRef.current = recognition;
-    setListening(true);
-    recognition.start();
-  };
-
-  const stopListening = () => {
-    recognitionRef.current?.stop?.();
-    setListening(false);
-  };
 
   if (!domain) {
     return (
@@ -435,8 +662,8 @@ export default function TerminalPage(_props: TerminalPageProps) {
       label={`${interview?.domainLabel ?? domainLabel} Mock Interview`}
       startedAt={interview?.startedAt}
       pausedMs={interview?.pausedMs ?? 0}
-      counter={`Q${Math.min(currentIndex + 1, interview?.questions.length || 8)} / ${interview?.questions.length || 8}`}
-      timerLimitSeconds={45 * 60}
+      counter={`Q${Math.min(currentIndex + 1, interview?.questions.length || MOCK_INTERVIEW_QUESTION_COUNT)} / ${interview?.questions.length || MOCK_INTERVIEW_QUESTION_COUNT}`}
+      timerLimitSeconds={(interview?.durationMinutes ?? MOCK_TOTAL_DURATION_MINUTES) * 60}
       onEndEarly={() => { void finishInterview(); }}
       onMaxVisibilityLeaves={() => { void finishInterview(); }}
       kickOutResultsPath={interview ? `/results/mock/${encodeURIComponent(interview.id)}` : undefined}
@@ -444,71 +671,152 @@ export default function TerminalPage(_props: TerminalPageProps) {
     >
       <div className="min-h-[calc(100vh-72px)] bg-background px-4 py-6 sm:px-8 lg:px-12">
         <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
-        {finishing ? (
+        {finishStage !== 'idle' ? (
           <div className="fixed inset-0 z-90 flex items-center justify-center bg-background/90 px-4">
             <div className="rounded-2xl border border-blueprint-line bg-card p-7 text-center shadow-2xl">
-              <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
-              <h2 className="mt-4 text-headline-md text-primary">Interview complete. Generating your readiness report...</h2>
-              <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: {elapsedLoading}s</p>
+              {finishStage === 'complete' ? (
+                <>
+                  <p className="text-ui-label text-blueprint-muted">Interview complete</p>
+                  <h2 className="mt-4 text-headline-md text-primary">Interview complete</h2>
+                  <p className="mt-2 text-body-md text-blueprint-muted">Total time taken: {formatElapsedDuration(completedTimeTakenSeconds)}</p>
+                </>
+              ) : (
+                <>
+                  <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
+                  <h2 className="mt-4 text-headline-md text-primary">Generating your assessment...</h2>
+                  <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: {elapsedLoading}s</p>
+                </>
+              )}
             </div>
+          </div>
+        ) : null}
+        {toastMessage ? (
+          <div className="fixed bottom-6 left-1/2 z-95 -translate-x-1/2 rounded-full border border-blueprint-line bg-card px-5 py-3 text-ui-label text-primary shadow-xl">
+            {toastMessage}
           </div>
         ) : null}
         <main className="relative z-10 mx-auto w-full max-w-5xl space-y-5">
           {error ? <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
           <section className="surface-card">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <p className="text-ui-label text-blueprint-muted">{meta.name} · {meta.tag}</p>
-                <h1 className="mt-2 text-headline-lg text-primary">{question?.question ?? 'Loading question...'}</h1>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-full border px-3 py-1 text-ui-label ${questionTypeBadgeClass(question?.type)}`}>{questionTypeLabel(question?.type)}</span>
+                  <span className="rounded-full border border-blueprint-line bg-blueprint-bg px-3 py-1 text-ui-label text-blueprint-muted">{answeredCount}/{MOCK_INTERVIEW_QUESTION_COUNT} answered</span>
+                </div>
+                <p className="mt-3 text-ui-label text-blueprint-muted">{meta.name} · {meta.tag}</p>
+                <p className="mt-2 text-body-md text-blueprint-muted">{phase === 'reading' ? 'Take mental notes' : phase === 'submitting' ? 'Recording your answer' : 'Answer window is live'}</p>
+                <h1 className={`mt-3 text-headline-lg text-primary transition-opacity duration-300 ${questionVisible ? 'opacity-100' : 'opacity-0'}`}>{question?.question ?? 'Loading question...'}</h1>
               </div>
-              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-headline-sm text-white">{meta.name[0]}</span>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <span className="rounded-full border border-blueprint-line bg-blueprint-bg px-3 py-1 text-ui-label text-primary">{question?.type ?? 'question'}</span>
-              <span className="rounded-full border border-blueprint-line bg-blueprint-bg px-3 py-1 text-ui-label text-blueprint-muted">{answeredCount} answered</span>
+              {phase === 'reading' ? (
+                <div className="rounded-2xl border border-blueprint-line bg-blueprint-bg px-5 py-4 text-center">
+                  <p className="text-ui-label text-blueprint-muted">Reading Phase</p>
+                  <p className="mt-2 font-serif text-[clamp(2.75rem,8vw,4.5rem)] leading-none text-primary"><span ref={readingCountdownRef}>{MOCK_READING_PHASE_SECONDS}</span></p>
+                  <p className="mt-2 text-body-sm text-blueprint-muted">Answer unlocks automatically.</p>
+                </div>
+              ) : (
+                <div ref={answerTimerShellRef} className="rounded-2xl border border-blueprint-line bg-blueprint-bg px-5 py-4 text-center transition-all">
+                  <p className="text-ui-label">Answer Phase</p>
+                  <p className="mt-2 font-serif text-[clamp(2.75rem,8vw,4.5rem)] leading-none"><span ref={answerCountdownRef}>{formatCountdown(MOCK_ANSWER_PHASE_SECONDS)}</span></p>
+                  <p className="mt-2 text-body-sm opacity-80">Auto-submits at 0:00</p>
+                </div>
+              )}
             </div>
           </section>
 
           <section className="surface-card">
-            <label className="text-ui-label text-blueprint-muted">Your answer</label>
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              disabled={!question || Boolean(currentResponse)}
-              className="mt-3 min-h-72 w-full resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-4 text-body-md text-primary outline-none focus:border-primary disabled:opacity-70"
-              placeholder="Answer like you would in a real interview. Name tradeoffs, examples, and validation."
-            />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-ui-label text-blueprint-muted">
-              <span className={draft.length < 100 ? 'text-amber-700' : 'text-blueprint-muted'}>{draft.length} characters · 100 soft minimum</span>
-              {voiceSupported ? (
-                <button type="button" onClick={listening ? stopListening : startListening} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line px-4 py-2 text-primary">
-                  {listening ? <Square size={15} /> : <Mic size={15} />} {listening ? 'Stop Listening' : 'Microphone'}
-                </button>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-ui-label text-blueprint-muted">
+                  {phase === 'reading'
+                    ? <>Read the question carefully. Answer unlocks in <span ref={readingUnlockRef}>{MOCK_READING_PHASE_SECONDS}</span>s.</>
+                    : phase === 'answering'
+                      ? 'Answer the question now. Submit early or let the timer auto-record what you have.'
+                      : 'Recording your answer...'}
+                </p>
+                {phase === 'answering' ? (
+                  <div className="mt-3 inline-flex items-center gap-3 rounded-full border border-blueprint-line bg-blueprint-bg px-4 py-2 text-ui-label text-primary">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-white">{meta.name[0]}</span>
+                    <span>{meta.name}</span>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="relative mt-4">
+              <textarea
+                value={draft}
+                onChange={(event) => {
+                  draftRef.current = event.target.value;
+                  setDraft(event.target.value);
+                }}
+                disabled={!question || phase !== 'answering' || submitting}
+                className="min-h-72 w-full resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-4 text-body-md text-primary outline-none transition-opacity focus:border-primary disabled:opacity-60"
+                placeholder="Answer like you would in a real interview. Name tradeoffs, examples, and validation."
+              />
+              {phase === 'reading' ? (
+                <div className="absolute inset-0 flex items-center justify-center rounded-xl border border-dashed border-blueprint-line bg-card/80 px-6 text-center backdrop-blur-[1px]">
+                  <div>
+                    <p className="text-ui-label text-blueprint-muted">Read the question carefully.</p>
+                    <p className="mt-2 text-body-md text-primary">Answer unlocks in <span ref={readingOverlayCountdownRef}>{MOCK_READING_PHASE_SECONDS}</span>s.</p>
+                  </div>
+                </div>
               ) : null}
             </div>
-            {currentResponse?.followUpQuestion ? (
-              <div className="mt-5 rounded-xl border border-blueprint-line bg-card p-4">
-                <p className="text-ui-label text-blueprint-muted">Optional follow-up</p>
-                <p className="mt-2 text-body-md text-primary">{currentResponse.followUpQuestion}</p>
-                <textarea value={followUpDraft} onChange={(event) => setFollowUpDraft(event.target.value)} className="mt-3 h-24 w-full resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-3 text-body-md text-primary outline-none" />
-              </div>
-            ) : null}
-            {currentResponse ? (
-              <div className="mt-5 rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
-                <p className="text-ui-label text-blueprint-muted">{meta.name}</p>
-                <p className="mt-2 text-body-md text-primary">{currentResponse.spokenResponse}</p>
-              </div>
-            ) : null}
-            <div className="mt-5 flex justify-end gap-3">
-              {currentResponse ? (
-                <button type="button" onClick={nextQuestion} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white">
-                  {currentIndex >= (interview?.questions.length ?? 1) - 1 ? 'Finish Interview' : 'Next Question'}
+            <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <button
+                  type="button"
+                  disabled={phase !== 'answering' || submitting || !voiceSupported}
+                  onClick={() => {
+                    if (listening) {
+                      autoVoiceAllowedRef.current = false;
+                      stopListening();
+                      return;
+                    }
+                    autoVoiceAllowedRef.current = true;
+                    startListening();
+                  }}
+                  className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-ui-label ${phase === 'answering' && voiceSupported ? 'border-blueprint-line text-primary' : 'border-blueprint-line text-blueprint-muted opacity-60'}`}
+                >
+                  {listening ? <MicOff size={15} /> : <Mic size={15} />}
+                  {listening ? 'Listening live' : 'Voice input'}
                 </button>
-              ) : (
-                <button type="button" disabled={!draft.trim() || submitting} onClick={() => { void submitAnswer(); }} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white disabled:opacity-60">
-                  {submitting ? 'Interviewer Thinking...' : 'Submit Answer'}
-                </button>
-              )}
+                {phase === 'answering' && listening ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      autoVoiceAllowedRef.current = false;
+                      stopListening();
+                    }}
+                    className="mt-2 block text-sm text-blueprint-muted underline underline-offset-2"
+                  >
+                    Stop and type instead
+                  </button>
+                ) : phase === 'answering' && voiceSupported ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      autoVoiceAllowedRef.current = true;
+                      startListening();
+                    }}
+                    className="mt-2 block text-sm text-blueprint-muted underline underline-offset-2"
+                  >
+                    Start voice input again
+                  </button>
+                ) : phase === 'submitting' ? (
+                  <p className="mt-2 text-sm text-blueprint-muted">Your answer is being recorded now.</p>
+                ) : (
+                  <p className="mt-2 text-sm text-blueprint-muted">The microphone unlocks after the reading phase.</p>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={phase !== 'answering' || submitting}
+                onClick={() => { void submitAnswer(); }}
+                className="rounded-full bg-primary px-6 py-3 text-ui-label text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submitting ? 'Recording...' : 'Submit Answer'}
+              </button>
             </div>
           </section>
         </main>

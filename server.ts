@@ -3703,6 +3703,9 @@ type MockInterviewType = 'technical' | 'design' | 'mixed';
 type MockPersona = 'alex' | 'jordan' | 'sam';
 type MockQuestionType = 'technical' | 'design' | 'behavioral' | 'situational';
 
+const MOCK_INTERVIEW_QUESTION_COUNT = 3;
+const MOCK_INTERVIEW_DURATION_MINUTES = 15;
+
 type MockQuestionRecord = {
   id: string;
   question: string;
@@ -3721,7 +3724,24 @@ type MockResponseRecord = {
   internalScore: number | null;
   internalFlags: string[];
   aiUnavailable?: boolean;
+  timeSpentSeconds: number | null;
   answeredAt: string;
+};
+
+type MockReportRecord = {
+  overallScore: number;
+  readinessVerdict: 'not-ready' | 'borderline' | 'ready' | 'strong-yes';
+  technicalDepth: string;
+  communicationClarity: string;
+  designThinking: string;
+  behavioralMaturity: string;
+  topThreeStrengths: string[];
+  topThreeWeaknesses: string[];
+  criticalGaps: string[];
+  studyPlan: Array<{ area: string; action: string; estimatedDays: number }>;
+  hiringPanelSummary: string;
+  isPartial: boolean;
+  answeredCount: number;
 };
 
 function normalizeMockLevel(value: unknown): MockLevel {
@@ -3770,10 +3790,89 @@ function mockQuestionHash(question: string) {
   return hashText(question.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80));
 }
 
-function normalizeMockQuestions(payload: unknown): { interviewTitle: string; questions: MockQuestionRecord[] } {
+function clampZeroableScore(value: unknown, fallback = 0) {
+  const score = Number(value);
+  if (!Number.isFinite(score)) return fallback;
+  return Math.min(10, Math.max(0, Math.round(score)));
+}
+
+function hasRealMockAnswer(answer: string | null | undefined) {
+  return String(answer ?? '').trim().length > 0;
+}
+
+function countAnsweredMockResponses(responses: MockResponseRecord[]) {
+  return responses.filter((response) => hasRealMockAnswer(response.answer)).length;
+}
+
+function averageMockInternalScores(responses: MockResponseRecord[]) {
+  const scored = responses
+    .map((response) => response.internalScore)
+    .filter((score): score is number => typeof score === 'number');
+  if (!scored.length) return 0;
+  return Math.round(scored.reduce((sum, score) => sum + score, 0) / scored.length);
+}
+
+function getRequiredMockQuestionTypes(interviewType: MockInterviewType): MockQuestionType[] {
+  if (interviewType === 'technical') return ['technical', 'situational', 'behavioral'];
+  if (interviewType === 'design') return ['technical', 'design', 'behavioral'];
+  return ['technical', 'design', 'behavioral'];
+}
+
+function buildZeroAnswerMockReport(): MockReportRecord {
+  return {
+    overallScore: 0,
+    readinessVerdict: 'not-ready',
+    technicalDepth: 'No answers were submitted.',
+    communicationClarity: 'No answers were submitted.',
+    designThinking: 'No answers were submitted.',
+    behavioralMaturity: 'No answers were submitted.',
+    topThreeStrengths: [],
+    topThreeWeaknesses: ['No questions were answered'],
+    criticalGaps: ['Complete at least one full mock interview to receive a real assessment'],
+    studyPlan: [],
+    hiringPanelSummary: 'The candidate did not answer any questions in this session. No assessment can be made.',
+    isPartial: false,
+    answeredCount: 0,
+  };
+}
+
+function buildMockReportPromptResponses(interview: ReturnType<typeof mapMockInterviewRow>) {
+  return interview.questions.map((question) => {
+    const response = interview.responses.find((item) => item.questionId === question.id);
+    return {
+      question: question.question,
+      answer: response && hasRealMockAnswer(response.answer) ? response.answer.trim() : null,
+      internalScore: response?.internalScore ?? null,
+      internalFlags: response?.internalFlags ?? [],
+    };
+  });
+}
+
+function applyMockReportDerivedFields(interview: ReturnType<typeof mapMockInterviewRow>, report: MockReportRecord): MockReportRecord {
+  const answeredCount = countAnsweredMockResponses(interview.responses);
+  const answeredTypes = new Set(
+    interview.responses
+      .filter((response) => hasRealMockAnswer(response.answer))
+      .map((response) => interview.questions.find((question) => question.id === response.questionId)?.type ?? null)
+      .filter((type): type is MockQuestionType => Boolean(type)),
+  );
+
+  return {
+    ...report,
+    overallScore: averageMockInternalScores(interview.responses),
+    answeredCount,
+    isPartial: answeredCount > 0 && answeredCount < MOCK_INTERVIEW_QUESTION_COUNT,
+    technicalDepth: answeredTypes.has('technical') ? report.technicalDepth : 'Not answered',
+    designThinking: answeredTypes.has('design') || answeredTypes.has('situational') ? report.designThinking : 'Not answered',
+    behavioralMaturity: answeredTypes.has('behavioral') ? report.behavioralMaturity : 'Not answered',
+  };
+}
+
+function normalizeMockQuestions(payload: unknown, interviewType: MockInterviewType): { interviewTitle: string; questions: MockQuestionRecord[] } {
   const source = parseJsonRecord(payload);
   const interviewTitle = String(source.interviewTitle ?? 'Mock Interview').trim() || 'Mock Interview';
   const rawQuestions = Array.isArray(source.questions) ? source.questions : [];
+  const requiredTypes = getRequiredMockQuestionTypes(interviewType);
   const questions = rawQuestions.map((raw, index) => {
     const item = parseJsonRecord(raw);
     const type = String(item.type ?? '').trim().toLowerCase();
@@ -3786,8 +3885,15 @@ function normalizeMockQuestions(payload: unknown): { interviewTitle: string; que
       followUpIfStrong: String(item.followUpIfStrong ?? item.follow_up_if_strong ?? '').trim(),
       followUpIfWeak: String(item.followUpIfWeak ?? item.follow_up_if_weak ?? '').trim(),
     };
-  }).filter((item) => item.question && item.whatWeAreLookingFor).slice(0, 8);
-  if (questions.length !== 8) throw new Error(`mock_question_validation_failed:${questions.length}`);
+  }).filter((item) => item.question && item.whatWeAreLookingFor).slice(0, MOCK_INTERVIEW_QUESTION_COUNT);
+  if (questions.length !== MOCK_INTERVIEW_QUESTION_COUNT) throw new Error(`mock_question_validation_failed:${questions.length}`);
+  const questionTypes = questions.map((question) => question.type);
+  if (new Set(questionTypes).size !== MOCK_INTERVIEW_QUESTION_COUNT) {
+    throw new Error('mock_question_validation_failed:duplicate_types');
+  }
+  if (!requiredTypes.every((type) => questionTypes.includes(type)) && !(questionTypes.includes('technical') && questionTypes.includes('behavioral') && questionTypes.some((type) => type === 'design' || type === 'situational'))) {
+    throw new Error(`mock_question_validation_failed:types:${questionTypes.join(',')}`);
+  }
   return { interviewTitle, questions };
 }
 
@@ -3796,17 +3902,18 @@ function normalizeMockResponsePayload(payload: unknown) {
   return {
     spokenResponse: String(source.spokenResponse ?? 'Take a moment, then continue to the next question.').trim() || 'Take a moment, then continue to the next question.',
     followUpQuestion: source.followUpQuestion === null ? null : String(source.followUpQuestion ?? '').trim() || null,
-    internalScore: clampScore(source.internalScore, 5),
+    internalScore: source.internalScore === null || source.internalScore === undefined ? null : clampScore(source.internalScore, 5),
     internalFlags: parseJsonArray(source.internalFlags).slice(0, 5),
   };
 }
 
-function normalizeMockReportPayload(payload: unknown) {
+function normalizeMockReportPayload(payload: unknown): MockReportRecord {
   const source = parseJsonRecord(payload);
   const verdict = String(source.readinessVerdict ?? '').trim();
+  const normalizedVerdict = (['not-ready', 'borderline', 'ready', 'strong-yes'] as const).find((item) => item === verdict) ?? 'borderline';
   return {
-    overallScore: clampScore(source.overallScore, 5),
-    readinessVerdict: ['not-ready', 'borderline', 'ready', 'strong-yes'].includes(verdict) ? verdict : 'borderline',
+    overallScore: clampZeroableScore(source.overallScore, 0),
+    readinessVerdict: normalizedVerdict,
     technicalDepth: String(source.technicalDepth ?? 'Evaluation unavailable for some questions.'),
     communicationClarity: String(source.communicationClarity ?? 'Use clearer structure and examples.'),
     designThinking: String(source.designThinking ?? 'Name tradeoffs and failure modes more explicitly.'),
@@ -3820,6 +3927,8 @@ function normalizeMockReportPayload(payload: unknown) {
       estimatedDays: Math.max(1, Number(item.estimatedDays ?? 3)),
     })),
     hiringPanelSummary: String(source.hiringPanelSummary ?? 'The interview showed useful signal, but some evaluation details were unavailable.'),
+    isPartial: Boolean(source.isPartial),
+    answeredCount: Math.max(0, Math.min(MOCK_INTERVIEW_QUESTION_COUNT, Number(source.answeredCount ?? 0))),
   };
 }
 
@@ -3833,6 +3942,9 @@ function parseMockResponses(value: unknown): MockResponseRecord[] {
     internalScore: item.internalScore === null ? null : clampScore(item.internalScore, 5),
     internalFlags: parseJsonArray(item.internalFlags),
     aiUnavailable: Boolean(item.aiUnavailable),
+    timeSpentSeconds: item.timeSpentSeconds === null || item.timeSpentSeconds === undefined
+      ? null
+      : Math.max(0, Math.round(Number(item.timeSpentSeconds))),
     answeredAt: String(item.answeredAt ?? new Date().toISOString()),
   })).filter((item) => item.questionId);
 }
@@ -3880,7 +3992,7 @@ function mapMockInterviewRow(row: {
     currentQuestionIndex: Number(row.current_question_index ?? 0),
     startedAt: row.started_at,
     pausedMs: Number(row.paused_ms ?? 0),
-    durationMinutes: Number(row.duration_minutes ?? 45),
+    durationMinutes: Number(row.duration_minutes ?? MOCK_INTERVIEW_DURATION_MINUTES),
     lastSavedAt: row.last_saved_at,
     completedAt: row.completed_at,
     savedAt: row.saved_at,
@@ -3954,16 +4066,18 @@ async function generateMockInterviewForUser(params: { userId: string; domain: st
   const usedAngles = seenRows.length >= 24 ? seenRows.map((row) => row.question_text).slice(0, 12) : [];
   const seeds = selectMockQuestionSeeds(params.domain, params.interviewType);
   const domainLabel = PRACTICE_DOMAIN_LABELS[toPracticeDomain(params.domain) || 'frontend'] ?? params.domain;
+  const requiredTypes = getRequiredMockQuestionTypes(params.interviewType);
+  const secondaryType = requiredTypes[1];
   await checkAiRateLimit(params.userId, 'mock-question-generation', 3);
   const generated = await callStructuredModel(
-    `You are a technical hiring manager at a tier-1 tech company preparing a mock interview for a ${domainLabel} ${mockLevelLabel(params.level)} engineer. Generate 8 realistic interview questions. Never generate DSA or competitive programming questions. Questions must reflect real engineering work at ${domainLabel} domain. Return only valid JSON.`,
-    `Domain: ${domainLabel}. Level: ${mockLevelLabel(params.level)}. Interview type: ${mockInterviewTypeLabel(params.interviewType)}. Previously seen question hashes for this user+domain: ${JSON.stringify(seenRows.map((row) => row.question_hash))}. These question angles have been used: ${JSON.stringify(usedAngles)}. Draw your 8 questions from this relevant pool: ${JSON.stringify(seeds)}. Generate 8 questions: 2 technical depth, 2 system design or architecture, 2 behavioral/past experience, 2 situational/tradeoff. Vary question types - no two consecutive questions of the same type. For behavioral questions, reframe them as open questions to the candidate. For situational questions, present them as real scenarios. For system design, present them as "Design a [system]" prompts. Return JSON: { interviewTitle: string, questions: [ { id, question, type: 'technical'|'design'|'behavioral'|'situational', whatWeAreLookingFor: string, followUpIfStrong: string, followUpIfWeak: string } ] }`,
-    normalizeMockQuestions,
+    `You are a technical hiring manager at a tier-1 tech company preparing a mock interview for a ${domainLabel} ${mockLevelLabel(params.level)} engineer. Generate exactly 3 realistic interview questions. Never generate DSA or competitive programming questions. Questions must reflect real engineering work in ${domainLabel}. Return only valid JSON.`,
+    `Domain: ${domainLabel}. Level: ${mockLevelLabel(params.level)}. Interview type: ${mockInterviewTypeLabel(params.interviewType)}. Previously seen question hashes for this user+domain: ${JSON.stringify(seenRows.map((row) => row.question_hash))}. These question angles have been used: ${JSON.stringify(usedAngles)}. Draw your 3 questions from this relevant pool: ${JSON.stringify(seeds)}. Generate exactly 3 questions in this exact type mix: 1 technical, 1 ${secondaryType}, 1 behavioral. Never repeat a type. Never return two questions of the same type. For behavioral questions, ask for a real past example. For situational questions, present a concrete tradeoff scenario. For design questions, present a realistic system or architecture prompt. Return JSON: { interviewTitle: string, questions: [ { id, question, type: 'technical'|'design'|'behavioral'|'situational', whatWeAreLookingFor: string, followUpIfStrong: string, followUpIfWeak: string } ] }`,
+    (payload) => normalizeMockQuestions(payload, params.interviewType),
     {
-      maxTokens: 2000,
+      maxTokens: 800,
       timeoutMs: 30_000,
       model: 'deepseek/deepseek-chat',
-      temperature: 0.8,
+      temperature: 0.6,
     },
   );
   const questions = generated.result.questions.map((question, index) => ({ ...question, id: `q-${index + 1}` }));
@@ -3973,7 +4087,7 @@ async function generateMockInterviewForUser(params: { userId: string; domain: st
       id, user_id, domain, level, persona, interview_type, interview_title, status, questions, responses,
       current_question_index, started_at, paused_ms, last_saved_at, duration_minutes, completed_at, report_payload
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, 'started', ?::jsonb, '[]'::jsonb, 0, NOW(), 0, NOW(), 45, NULL, '{}'::jsonb
+      ?, ?, ?, ?, ?, ?, ?, 'started', ?::jsonb, '[]'::jsonb, 0, NOW(), 0, NOW(), ?, NULL, '{}'::jsonb
     )
   `).run(
     interviewId,
@@ -3984,6 +4098,7 @@ async function generateMockInterviewForUser(params: { userId: string; domain: st
     params.interviewType,
     generated.result.interviewTitle,
     JSON.stringify(questions),
+    MOCK_INTERVIEW_DURATION_MINUTES,
   );
   for (const question of questions) {
     await db.prepare(`
@@ -3998,24 +4113,29 @@ async function generateMockInterviewForUser(params: { userId: string; domain: st
 }
 
 function buildFallbackMockReport(interview: Awaited<ReturnType<typeof mapMockInterviewRow>>) {
-  const scored = interview.responses.map((response) => response.internalScore).filter((score): score is number => typeof score === 'number');
-  const average = scored.length ? Math.round(scored.reduce((sum, score) => sum + score, 0) / scored.length) : 5;
-  return {
+  const answeredCount = countAnsweredMockResponses(interview.responses);
+  if (answeredCount === 0) return buildZeroAnswerMockReport();
+  const average = averageMockInternalScores(interview.responses);
+  return applyMockReportDerivedFields(interview, {
     overallScore: average,
-    readinessVerdict: average >= 8 ? 'ready' : average >= 6 ? 'borderline' : 'not-ready',
-    technicalDepth: 'Use more concrete mechanisms, failure modes, and examples from real systems.',
-    communicationClarity: 'Structure each answer with context, decision, tradeoff, outcome, and validation.',
-    designThinking: 'Call out constraints, alternatives, and how you would monitor the chosen approach.',
-    behavioralMaturity: 'Tie ownership stories to impact and learning.',
-    topThreeStrengths: ['Completed the interview flow', 'Provided answer signal across questions', 'Stayed engaged through the round'],
-    topThreeWeaknesses: ['Needs more specificity', 'Some evaluations may be unavailable', 'Tradeoffs can be sharper'],
-    criticalGaps: interview.responses.some((response) => response.internalScore === null) ? ['evaluation unavailable for one or more questions'] : ['deeper examples needed'],
+    readinessVerdict: average >= 8 ? 'strong-yes' : average >= 7 ? 'ready' : average >= 5 ? 'borderline' : 'not-ready',
+    technicalDepth: 'The submitted answers did not show enough concrete depth to support a stronger assessment.',
+    communicationClarity: 'The recorded answers need tighter structure and clearer technical detail.',
+    designThinking: 'Tradeoffs, constraints, and failure modes were not explained sharply enough.',
+    behavioralMaturity: 'Ownership and judgment were only partially demonstrated in the submitted answers.',
+    topThreeStrengths: [],
+    topThreeWeaknesses: ['Answers were incomplete or too shallow', 'Key tradeoffs were missing', 'Several questions were not answered clearly'],
+    criticalGaps: ['Complete all three questions to receive a stronger interview signal'],
     studyPlan: [
-      { area: 'Answer structure', action: 'Practice STAR plus technical tradeoff framing for each answer.', estimatedDays: 3 },
-      { area: 'Domain depth', action: 'Review the weak question types from this interview and write model answers.', estimatedDays: 5 },
+      { area: 'Answer structure', action: 'Practice concise answers with context, decision, tradeoff, and outcome.', estimatedDays: 3 },
+      { area: 'Mock coverage', action: 'Complete all three question types in one sitting.', estimatedDays: 4 },
     ],
-    hiringPanelSummary: 'The candidate showed useful signal but needs more concrete, domain-specific depth before a strong recommendation.',
-  };
+    hiringPanelSummary: answeredCount < MOCK_INTERVIEW_QUESTION_COUNT
+      ? 'Only part of the interview was answered. The signal is incomplete and cannot support a full assessment.'
+      : 'The session provided some signal, but the answers were not strong enough to justify a positive recommendation.',
+    isPartial: answeredCount < MOCK_INTERVIEW_QUESTION_COUNT,
+    answeredCount,
+  });
 }
 
 async function generatePracticeSessionQuestions(params: {
@@ -7506,32 +7626,51 @@ export async function createApp(options: { listen?: boolean } = {}) {
         return;
       }
       const questionId = String(request.body?.questionId ?? '').trim();
-      const answer = String(request.body?.answer ?? '').trim();
+      const answer = String(request.body?.answer ?? '');
+      const trimmedAnswer = answer.trim();
       const followUpAnswer = String(request.body?.followUpAnswer ?? '').trim();
+      const timeSpentSeconds = Number.isFinite(Number(request.body?.timeSpentSeconds))
+        ? Math.max(0, Math.round(Number(request.body?.timeSpentSeconds)))
+        : null;
       const question = interview.questions.find((item) => item.id === questionId);
-      if (!question || !answer) {
-        response.status(400).json({ error: 'questionId and answer are required.' });
+      if (!question) {
+        response.status(400).json({ error: 'questionId is required.' });
         return;
       }
 
       let responsePayload: Omit<MockResponseRecord, 'questionId' | 'answer' | 'followUpAnswer' | 'answeredAt'>;
-      try {
-        await checkAiRateLimit(user.id, 'mock-persona-response', 1);
-        const ai = await callStructuredModel(
-          mockPersonaSystemPrompt(interview.persona),
-          `Domain: ${interview.domainLabel}. Level: ${mockLevelLabel(interview.level)}. Question: ${question.question}. Looking for: ${question.whatWeAreLookingFor}. Answer: ${answer}. Follow-up answer: ${followUpAnswer || 'none'}. Return JSON: { spokenResponse: string (1-2 sentences in persona voice), followUpQuestion: string | null, internalScore: number (1-10), internalFlags: string[] (what they missed) }`,
-          normalizeMockResponsePayload,
-          { maxTokens: 250, timeoutMs: 15_000, model: 'deepseek/deepseek-chat', temperature: 0.75 },
-        );
-        responsePayload = ai.result;
-      } catch {
+      if (!trimmedAnswer) {
         responsePayload = {
-          spokenResponse: 'Take a moment, then continue to the next question.',
+          spokenResponse: 'No answer recorded for this question.',
           followUpQuestion: null,
           internalScore: null,
-          internalFlags: ['evaluation unavailable for this question'],
-          aiUnavailable: true,
+          internalFlags: ['not answered'],
+          aiUnavailable: false,
+          timeSpentSeconds,
         };
+      } else {
+        try {
+          await checkAiRateLimit(user.id, 'mock-persona-response', 1);
+          const ai = await callStructuredModel(
+            mockPersonaSystemPrompt(interview.persona),
+            `Domain: ${interview.domainLabel}. Level: ${mockLevelLabel(interview.level)}. Question: ${question.question}. Looking for: ${question.whatWeAreLookingFor}. Answer: ${trimmedAnswer}. Follow-up answer: ${followUpAnswer || 'none'}. Return JSON: { spokenResponse: string (1-2 sentences in persona voice), followUpQuestion: string | null, internalScore: number | null, internalFlags: string[] (what they missed) }`,
+            normalizeMockResponsePayload,
+            { maxTokens: 250, timeoutMs: 15_000, model: 'deepseek/deepseek-chat', temperature: 0.75 },
+          );
+          responsePayload = {
+            ...ai.result,
+            timeSpentSeconds,
+          };
+        } catch {
+          responsePayload = {
+            spokenResponse: 'Take a moment, then continue to the next question.',
+            followUpQuestion: null,
+            internalScore: null,
+            internalFlags: ['evaluation unavailable for this question'],
+            aiUnavailable: true,
+            timeSpentSeconds,
+          };
+        }
       }
 
       const responses = interview.responses.filter((item) => item.questionId !== questionId);
@@ -7570,18 +7709,39 @@ export async function createApp(options: { listen?: boolean } = {}) {
         response.status(404).json({ error: 'Mock interview not found.' });
         return;
       }
-      let report = buildFallbackMockReport(interview);
-      try {
-        await checkAiRateLimit(user.id, 'mock-final-report', 1);
-        const ai = await callStructuredModel(
-          'You are a hiring panel lead writing a final interview assessment. Be honest, specific, constructive. No generic praise. Return only valid JSON.',
-          `Domain: ${interview.domainLabel}. Level: ${mockLevelLabel(interview.level)}. Persona: ${mockPersonaName(interview.persona)}. Full interview record: ${JSON.stringify({ questions: interview.questions, responses: interview.responses.map((item) => ({ ...item, scoreNote: item.internalScore === null ? 'evaluation unavailable for this question' : item.internalScore })) })}. Generate final report. Return JSON: { overallScore: number (1-10), readinessVerdict: 'not-ready'|'borderline'|'ready'|'strong-yes', technicalDepth: string, communicationClarity: string, designThinking: string, behavioralMaturity: string, topThreeStrengths: string[], topThreeWeaknesses: string[], criticalGaps: string[], studyPlan: [ { area: string, action: string, estimatedDays: number } ], hiringPanelSummary: string (2-3 sentences as if written for a real hiring committee) }`,
-          normalizeMockReportPayload,
-          { maxTokens: 900, timeoutMs: 25_000, model: 'deepseek/deepseek-chat', temperature: 0.5 },
-        );
-        report = ai.result;
-      } catch {
+      const answeredCount = countAnsweredMockResponses(interview.responses);
+      let report: MockReportRecord;
+      if (answeredCount === 0) {
+        report = buildZeroAnswerMockReport();
+      } else {
+        const promptResponses = buildMockReportPromptResponses(interview);
+        const partialInstruction = answeredCount < MOCK_INTERVIEW_QUESTION_COUNT
+          ? `The candidate answered ${answeredCount} of ${MOCK_INTERVIEW_QUESTION_COUNT} questions. Generate a report based ONLY on what was actually answered. Do not invent performance on unanswered questions. For unanswered questions, state 'Not answered' in the relevant dimension.`
+          : 'The candidate answered all 3 questions. Base the report only on the recorded answers and scores.';
         report = buildFallbackMockReport(interview);
+        try {
+          await checkAiRateLimit(user.id, 'mock-final-report', 1);
+          let aiReport: MockReportRecord | null = null;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              const ai = await callStructuredModel(
+                'You are a strict technical interviewer writing a candidate assessment. Be brutally honest. Short sentences. No padding. No encouragement that is not earned. If the candidate answered poorly, say so directly. Return only valid JSON.',
+                `Domain: ${interview.domainLabel}. Level: ${mockLevelLabel(interview.level)}. The candidate answered ${answeredCount} of 3 questions. ${partialInstruction} Here are the actual answers with scores: ${JSON.stringify(promptResponses)}. Questions not answered have answer: null. Generate a short honest report. Each dimension string must be 1-2 sentences maximum - specific to what the candidate actually said, not generic. If a question was not answered, say 'Not answered' for that dimension. Do not fabricate performance. Return JSON: { overallScore: number (average of non-null internalScores, 0 if none), readinessVerdict: 'not-ready'|'borderline'|'ready'|'strong-yes', technicalDepth: string (1-2 sentences MAX), communicationClarity: string (1-2 sentences MAX), designThinking: string (1-2 sentences MAX), behavioralMaturity: string (1-2 sentences MAX), topThreeStrengths: string[] (empty array if nothing earned), topThreeWeaknesses: string[], criticalGaps: string[], studyPlan: [ { area, action, estimatedDays } ], hiringPanelSummary: string (1-2 sentences MAX, honest), isPartial: boolean, answeredCount: number }`,
+                normalizeMockReportPayload,
+                { maxTokens: 600, timeoutMs: 20_000, model: 'deepseek/deepseek-chat', temperature: 0.5 },
+              );
+              aiReport = ai.result;
+              break;
+            } catch (reportError) {
+              if (attempt === 1) throw reportError;
+            }
+          }
+          if (aiReport) {
+            report = applyMockReportDerivedFields(interview, aiReport);
+          }
+        } catch {
+          report = buildFallbackMockReport(interview);
+        }
       }
       await db.prepare(`
         UPDATE mock_interviews

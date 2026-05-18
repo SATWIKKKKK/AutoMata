@@ -4,6 +4,11 @@ export type MockPersona = 'alex' | 'jordan' | 'sam';
 export type MockQuestionType = 'technical' | 'design' | 'behavioral' | 'situational';
 export type MockReadinessVerdict = 'not-ready' | 'borderline' | 'ready' | 'strong-yes';
 
+export const MOCK_INTERVIEW_QUESTION_COUNT = 3;
+export const MOCK_READING_PHASE_SECONDS = 20;
+export const MOCK_ANSWER_PHASE_SECONDS = 5 * 60;
+export const MOCK_TOTAL_DURATION_MINUTES = 15;
+
 export type MockQuestion = {
   id: string;
   question: string;
@@ -22,6 +27,7 @@ export type MockResponse = {
   internalScore: number | null;
   internalFlags: string[];
   aiUnavailable?: boolean;
+  timeSpentSeconds: number | null;
   answeredAt: string;
 };
 
@@ -37,6 +43,8 @@ export type MockReport = {
   criticalGaps: string[];
   studyPlan: Array<{ area: string; action: string; estimatedDays: number }>;
   hiringPanelSummary: string;
+  isPartial: boolean;
+  answeredCount: number;
 };
 
 export type MockInterviewState = {
@@ -122,7 +130,7 @@ export async function fetchMockInterview(interviewId: string) {
 
 export async function respondToMockQuestion(
   interviewId: string,
-  payload: { questionId: string; answer: string; followUpAnswer?: string },
+  payload: { questionId: string; answer: string; followUpAnswer?: string; timeSpentSeconds?: number },
 ) {
   const result = await requestJson<{ response: MockResponse; interview: MockInterviewState }>(`/api/mock/${encodeURIComponent(interviewId)}/respond`, {
     method: 'POST',

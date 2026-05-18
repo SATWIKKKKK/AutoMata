@@ -305,7 +305,7 @@ export const DATABASE_SCHEMA_SQL = `
     started_at TIMESTAMPTZ DEFAULT NOW(),
     paused_ms INTEGER NOT NULL DEFAULT 0,
     last_saved_at TIMESTAMPTZ DEFAULT NOW(),
-    duration_minutes INTEGER NOT NULL DEFAULT 45,
+    duration_minutes INTEGER NOT NULL DEFAULT 15,
     saved_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     report_payload JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -314,7 +314,8 @@ export const DATABASE_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_mock_interviews_user ON mock_interviews(user_id, started_at DESC);
   ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS interview_type TEXT NOT NULL DEFAULT 'mixed';
   ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS interview_title TEXT NOT NULL DEFAULT 'Mock Interview';
-  ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 45;
+  ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 15;
+  ALTER TABLE mock_interviews ALTER COLUMN duration_minutes SET DEFAULT 15;
   ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ;
 
   DROP TABLE IF EXISTS track_modules;

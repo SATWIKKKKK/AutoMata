@@ -307,10 +307,9 @@ export const MOCK_QUESTION_POOLS: Record<string, MockQuestionPool> = {
 export function selectMockQuestionSeeds(domain: string, interviewType: string) {
   const pool = MOCK_QUESTION_POOLS[domain] ?? frontend;
   const types: MockQuestionType[] = interviewType === 'technical'
-    ? ['technical', 'design', 'behavioral', 'situational']
+    ? ['technical', 'situational', 'behavioral']
     : interviewType === 'design'
-      ? ['design', 'technical', 'situational', 'behavioral']
-      : ['technical', 'design', 'behavioral', 'situational'];
-  const perType = interviewType === 'mixed' ? 6 : 8;
-  return types.flatMap((type) => pool[type].slice(0, perType).map((seed) => `${type}: ${seed}`)).slice(0, 30);
+      ? ['technical', 'design', 'behavioral']
+      : ['technical', 'design', 'behavioral'];
+  return types.flatMap((type) => pool[type].slice(0, 6).map((seed) => `${type}: ${seed}`)).slice(0, 18);
 }
