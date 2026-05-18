@@ -28,6 +28,13 @@ export type CodingEvaluation = {
   correctness: string;
   codeQuality: string;
   edgeCases: string;
+  bestPractices?: string;
+  dimensionScores?: {
+    correctness: number;
+    codeQuality: number;
+    edgeCases: number;
+    bestPractices: number;
+  } | null;
   improvements: string[];
   modelSolutionSketch: string;
 };

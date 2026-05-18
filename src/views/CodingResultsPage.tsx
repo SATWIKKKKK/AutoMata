@@ -3,6 +3,24 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { DOMAIN_LABELS } from '../lib/prep';
 import { fetchCodingAttempt, submitCodingAttempt, type CodingAttempt } from '../lib/codingRound';
 
+const SCORING_RUBRIC_ROWS = [
+  ['1-2', 'Code does not compile or has fundamental logic errors that prevent it from running at all.'],
+  ['3-4', 'Code runs but produces wrong output for most cases, missing core requirements.'],
+  ['5', 'Code handles the basic happy path but fails edge cases and is missing requirements.'],
+  ['6', 'Code mostly works, handles main cases, minor issues with edge cases or code quality.'],
+  ['7', 'Code works correctly for all stated requirements, reasonable quality, minor improvements possible.'],
+  ['8', 'Code works correctly, handles edge cases, clean readable structure, good naming.'],
+  ['9', 'Code works correctly, handles all edge cases including unstated ones, excellent structure, production-ready.'],
+  ['10', 'Exceptional — optimal approach, handles all cases, clean, well-named, would pass a strict senior engineer review immediately.'],
+];
+
+const DIMENSION_WEIGHTS = [
+  ['correctness', 'Correctness', 40],
+  ['codeQuality', 'Code Quality', 25],
+  ['edgeCases', 'Edge Cases', 20],
+  ['bestPractices', 'Best Practices', 15],
+] as const;
+
 function difficultyBadgeClass(difficulty: string) {
   if (difficulty === 'easy') return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/50 dark:bg-emerald-950/40 dark:text-emerald-300';
   if (difficulty === 'hard') return 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/50 dark:bg-red-950/40 dark:text-red-300';
@@ -37,6 +55,7 @@ export default function CodingResultsPage() {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [showNotes, setShowNotes] = useState(() => new URLSearchParams(location.search).get('showNotes') === '1');
+  const [scoreExplainerOpen, setScoreExplainerOpen] = useState(false);
   const notesSectionRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -77,6 +96,15 @@ export default function CodingResultsPage() {
   const problem = attempt?.problem ?? null;
   const aiUnavailable = attempt?.aiUnavailable ?? false;
   const domainLabel = useMemo(() => DOMAIN_LABELS[problem?.domain ?? ''] ?? problem?.domain ?? 'Domain', [problem?.domain]);
+  const dimensionScores = useMemo(() => {
+    if (!evaluation) return null;
+    return evaluation.dimensionScores ?? {
+      correctness: evaluation.score,
+      codeQuality: evaluation.score,
+      edgeCases: evaluation.score,
+      bestPractices: evaluation.score,
+    };
+  }, [evaluation]);
 
   const handleRetryEvaluation = async () => {
     if (!attempt || !problem || retrying) return;
@@ -166,10 +194,14 @@ export default function CodingResultsPage() {
                     <span className={`rounded-full border px-3 py-1 text-ui-label ${verdictBadgeClass(evaluation.verdict)}`}>{evaluation.verdict}</span>
                   </div>
                 </div>
-                <div className="rounded-[24px] border border-blueprint-line bg-blueprint-bg px-6 py-5 text-center">
+                <button
+                  type="button"
+                  onClick={() => setScoreExplainerOpen(true)}
+                  className="rounded-[24px] border border-blueprint-line bg-blueprint-bg px-6 py-5 text-center transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5"
+                >
                   <p className="text-ui-label text-blueprint-muted">Score</p>
                   <p className="mt-2 font-serif text-[clamp(3rem,8vw,5rem)] leading-none text-primary">{evaluation.score}<span className="text-headline-md text-blueprint-muted">/10</span></p>
-                </div>
+                </button>
               </div>
             </section>
 
@@ -232,6 +264,64 @@ export default function CodingResultsPage() {
               {attempt.notes.trim() || 'No saved notes were stored for this coding round.'}
             </p>
           </section>
+        ) : null}
+        {scoreExplainerOpen && evaluation && problem ? (
+          <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/45 px-4">
+            <div className="max-h-[88vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-blueprint-line bg-card p-6 shadow-2xl">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-ui-label text-blueprint-muted">Score Explainer</p>
+                  <h2 className="mt-2 text-headline-md text-primary not-italic">How This Score Was Calculated</h2>
+                </div>
+                <button type="button" onClick={() => setScoreExplainerOpen(false)} className="rounded-full border border-blueprint-line px-4 py-2 text-ui-label text-primary">
+                  Close
+                </button>
+              </div>
+              <div className="mt-5 overflow-hidden rounded-xl border border-blueprint-line">
+                <table className="w-full text-left text-body-md text-primary">
+                  <thead className="bg-blueprint-bg text-ui-label text-blueprint-muted">
+                    <tr><th className="px-4 py-3">Score Range</th><th className="px-4 py-3">What It Means</th></tr>
+                  </thead>
+                  <tbody>
+                    {SCORING_RUBRIC_ROWS.map(([range, meaning]) => (
+                      <tr key={range} className="border-t border-blueprint-line">
+                        <td className="px-4 py-3 font-semibold">{range}</td>
+                        <td className="px-4 py-3">{meaning}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <section className="mt-5 rounded-xl border border-blueprint-line bg-blueprint-bg p-4">
+                <p className="text-ui-label text-blueprint-muted">Problem Evaluation Criteria</p>
+                <ul className="mt-3 space-y-2 text-body-md text-primary">
+                  {problem.evaluationCriteria.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </section>
+              {dimensionScores ? (
+                <section className="mt-5 rounded-xl border border-blueprint-line bg-card p-4">
+                  <p className="text-ui-label text-blueprint-muted">Dimension Scores</p>
+                  <div className="mt-4 space-y-4">
+                    {DIMENSION_WEIGHTS.map(([key, label, weight]) => {
+                      const value = Math.max(1, Math.min(10, Number(dimensionScores[key] ?? evaluation.score)));
+                      const color = value >= 8 ? 'bg-emerald-500' : value >= 6 ? 'bg-amber-500' : 'bg-red-500';
+                      return (
+                        <div key={key}>
+                          <div className="flex items-center justify-between gap-3 text-ui-label">
+                            <span className="text-primary">{label} · {weight}%</span>
+                            <span className="text-blueprint-muted">{value}/10</span>
+                          </div>
+                          <div className="mt-2 h-2 overflow-hidden rounded-full bg-blueprint-bg">
+                            <div className={`h-full ${color}`} style={{ width: `${value * 10}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
+            </div>
+          </div>
         ) : null}
       </main>
     </div>

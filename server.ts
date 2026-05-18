@@ -2936,9 +2936,18 @@ type CodingEvaluation = {
   correctness: string;
   codeQuality: string;
   edgeCases: string;
+  bestPractices?: string;
+  dimensionScores?: {
+    correctness: number;
+    codeQuality: number;
+    edgeCases: number;
+    bestPractices: number;
+  };
   improvements: string[];
   modelSolutionSketch: string;
 };
+
+const CODING_SCORING_RUBRIC = 'Score the submission on a 1-10 scale using this rubric strictly: 1-2 = code does not compile or has fundamental logic errors that prevent it from running at all. 3-4 = code runs but produces wrong output for most cases, missing core requirements. 5 = code handles the basic happy path but fails edge cases and is missing requirements. 6 = code mostly works, handles main cases, minor issues with edge cases or code quality. 7 = code works correctly for all stated requirements, reasonable quality, minor improvements possible. 8 = code works correctly, handles edge cases, clean readable structure, good naming. 9 = code works correctly, handles all edge cases including unstated ones, excellent structure, production-ready. 10 = exceptional — optimal approach, handles all cases, clean, well-named, would pass a strict senior engineer review immediately. Apply this rubric honestly. A TODO comment left unimplemented is a 3 or below. A partially implemented function is a 4 or below. Do not cluster scores around 7.';
 
 type CodingAttemptRecord = {
   id: string;
@@ -3135,6 +3144,13 @@ function fallbackCodingEvaluation(problem: CodingProblemRecord, code: string, no
     correctness: 'AI evaluation was unavailable. The draft was saved, but a strong answer here should clearly satisfy the stated requirements and explain how the core logic works.',
     codeQuality: 'Use clearer structure, naming, and helper boundaries so an interviewer can scan the solution quickly.',
     edgeCases: 'Call out the edge cases that matter for this prompt and make the handling visible either in code or notes.',
+    bestPractices: 'Prefer readable, testable code with clear boundaries and predictable failure handling.',
+    dimensionScores: {
+      correctness: score,
+      codeQuality: Math.min(10, score + 1),
+      edgeCases: Math.max(1, score - 1),
+      bestPractices: score,
+    },
     improvements: [
       `Tie the implementation back to the concrete requirements for ${problem.title}.`,
       'Use the notes field to explain the expected output for one example if execution is unavailable.',
@@ -3152,6 +3168,17 @@ function normalizeCodingEvaluationPayload(payload: unknown): CodingEvaluation {
     correctness: String(source.correctness ?? 'No correctness review was returned.'),
     codeQuality: String(source.codeQuality ?? source.code_quality ?? 'No code quality review was returned.'),
     edgeCases: String(source.edgeCases ?? source.edge_cases ?? 'No edge case review was returned.'),
+    bestPractices: String(source.bestPractices ?? source.best_practices ?? 'No best-practices review was returned.'),
+    dimensionScores: (() => {
+      const dimensions = parseJsonRecord(source.dimensionScores ?? source.dimension_scores);
+      const fallbackScore = clampScore(source.score, 5);
+      return {
+        correctness: clampScore(dimensions.correctness, fallbackScore),
+        codeQuality: clampScore(dimensions.codeQuality ?? dimensions.code_quality, fallbackScore),
+        edgeCases: clampScore(dimensions.edgeCases ?? dimensions.edge_cases, fallbackScore),
+        bestPractices: clampScore(dimensions.bestPractices ?? dimensions.best_practices, fallbackScore),
+      };
+    })(),
     improvements: parseJsonArray(source.improvements).slice(0, 5),
     modelSolutionSketch: String(source.modelSolutionSketch ?? source.model_solution_sketch ?? 'No model solution sketch was returned.'),
   };
@@ -3198,7 +3225,8 @@ async function evaluateCodingSubmission(params: {
     params.code || '(no code submitted)',
     `Their notes: ${params.notes || 'none provided'}.`,
     'Evaluate strictly. For correctness: actually read the code line by line and determine if it correctly implements the requirements. If the code is incomplete (has TODO comments not implemented, missing return statements, empty function bodies), state this explicitly and score correctness below 4. For edge cases: identify specific edge cases the problem requires and state whether each is handled or not. For code quality: evaluate naming, structure, and whether an interviewer would approve. For model solution sketch: write a concrete 3-4 sentence description of what a correct optimal solution looks like - specific to this problem, not generic.',
-    "Return JSON: { score: number (1-10, be strict - a passing solution at medium difficulty should score 6-8 only if it correctly implements all requirements), verdict: 'pass' | 'needs-work' | 'fail', correctness: string (specific - does this code actually work? what does it do correctly and what is wrong?), codeQuality: string (specific feedback on the actual code structure), edgeCases: string (list the specific edge cases and whether each is handled), improvements: string[] (3-5 concrete specific improvements for this exact code), modelSolutionSketch: string (3-4 sentences describing the optimal approach for this specific problem) }",
+    CODING_SCORING_RUBRIC,
+    "Return JSON: { score: number (1-10), verdict: 'pass' | 'needs-work' | 'fail', correctness: string (specific - does this code actually work? what does it do correctly and what is wrong?), codeQuality: string (specific feedback on the actual code structure), edgeCases: string (list the specific edge cases and whether each is handled), bestPractices: string, dimensionScores: { correctness: number, codeQuality: number, edgeCases: number, bestPractices: number }, improvements: string[] (3-5 concrete specific improvements for this exact code), modelSolutionSketch: string (3-4 sentences describing the optimal approach for this specific problem) }",
   ].join('\n');
 
   const startedAt = Date.now();
@@ -3221,7 +3249,7 @@ async function evaluateCodingSubmission(params: {
           maxTokens: 900,
           timeoutMs: 20_000,
           model: CODING_EVALUATION_MODEL,
-          temperature: 0.65,
+          temperature: 0.6,
         },
       );
       if (ai.result.modelSolutionSketch.trim().length < 80) {
@@ -3437,6 +3465,8 @@ function toCodingResultAttemptPayload(attempt: CodingAttemptRecord) {
       correctness: attempt.evaluation?.correctness ?? '',
       codeQuality: attempt.evaluation?.codeQuality ?? '',
       edgeCases: attempt.evaluation?.edgeCases ?? '',
+      bestPractices: attempt.evaluation?.bestPractices ?? '',
+      dimensionScores: attempt.evaluation?.dimensionScores ?? null,
       improvements: attempt.evaluation?.improvements ?? [],
       modelSolutionSketch: attempt.evaluation?.modelSolutionSketch ?? '',
       code: attempt.code,
