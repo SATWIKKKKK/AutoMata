@@ -3229,8 +3229,7 @@ async function evaluateCodingSubmission(params: {
     `Their notes: ${params.notes || 'none provided'}.`,
     'Evaluate strictly. For correctness: actually read the code line by line and determine if it correctly implements the requirements. If the code is incomplete (has TODO comments not implemented, missing return statements, empty function bodies), state this explicitly and score correctness below 4. For edge cases: identify specific edge cases the problem requires and state whether each is handled or not. For code quality: evaluate naming, structure, and whether an interviewer would approve. For model solution sketch: write a concrete 3-4 sentence description of what a correct optimal solution looks like - specific to this problem, not generic.',
     CODING_SCORING_RUBRIC,
-    `In the modelSolutionCode field, provide a complete correct implementation of this problem in ${formatCodingLanguageLabel(params.language)}. The code must be complete, runnable, and implement all requirements. This is shown to the candidate after submission for learning. Do not provide a sketch — provide actual working code.`,
-    "Return JSON: { score: number (1-10), verdict: 'pass' | 'needs-work' | 'fail', correctness: string (specific - does this code actually work? what does it do correctly and what is wrong?), codeQuality: string (specific feedback on the actual code structure), edgeCases: string (list the specific edge cases and whether each is handled), bestPractices: string, dimensionScores: { correctness: number, codeQuality: number, edgeCases: number, bestPractices: number }, improvements: string[] (3-5 concrete specific improvements for this exact code), modelSolutionSketch: string (3-4 sentences describing the optimal approach for this specific problem), modelSolutionCode: string }",
+    "Return JSON: { score: number (1-10), verdict: 'pass' | 'needs-work' | 'fail', correctness: string (specific - does this code actually work? what does it do correctly and what is wrong?), codeQuality: string (specific feedback on the actual code structure), edgeCases: string (list the specific edge cases and whether each is handled), bestPractices: string, dimensionScores: { correctness: number, codeQuality: number, edgeCases: number, bestPractices: number }, improvements: string[] (3-5 concrete specific improvements for this exact code), modelSolutionSketch: string (3-4 sentences describing the optimal approach for this specific problem) }",
   ].join('\n');
 
   const startedAt = Date.now();
@@ -3250,7 +3249,7 @@ async function evaluateCodingSubmission(params: {
         userPrompt,
         (payload) => normalizeCodingEvaluationPayload(payload),
         {
-          maxTokens: 1200,
+          maxTokens: 900,
           timeoutMs: 20_000,
           model: CODING_EVALUATION_MODEL,
           temperature: 0.6,
@@ -3260,6 +3259,25 @@ async function evaluateCodingSubmission(params: {
         const error = new Error('coding_evaluation_insufficient_model_solution_sketch') as Error & { rawResponse?: string };
         error.rawResponse = JSON.stringify(ai.result);
         throw error;
+      }
+      try {
+        await checkAiRateLimit(params.userId, 'coding-model-solution', 1);
+        const solution = await callTextModel(
+          'Return only code. No markdown fences. No explanation.',
+          [
+            `Problem title: ${params.problem.title}.`,
+            `Language: ${formatCodingLanguageLabel(params.language)}.`,
+            `Problem statement: ${params.problem.problemStatement}.`,
+            'Requirements:',
+            formatNumberedList(params.problem.requirements),
+            'Provide a complete correct implementation. The code must be complete, runnable, and implement all requirements.',
+          ].join('\n'),
+          { maxTokens: 900, timeoutMs: 20_000, model: CODING_EVALUATION_MODEL, temperature: 0.35 },
+        );
+        ai.result.modelSolutionCode = solution.text.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
+      } catch (solutionError) {
+        ai.result.modelSolutionCode = '';
+        console.warn('[coding-eval] model solution generation failed', { error: solutionError instanceof Error ? solutionError.message : String(solutionError) });
       }
       console.log('[coding-eval] done', { score: ai.result.score, verdict: ai.result.verdict, durationMs: Date.now() - startedAt });
       return ai.result;

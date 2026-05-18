@@ -224,6 +224,17 @@ export default function CodingResultsPage() {
           </section>
         ) : null}
 
+        {!loading && !error && !attempt ? (
+          <section className="surface-card">
+            <p className="text-ui-label text-blueprint-muted">Coding Results</p>
+            <h1 className="mt-2 text-headline-md text-primary not-italic">No coding attempt was found for this result.</h1>
+            <p className="mt-3 text-body-md text-blueprint-muted">The attempt may still be saving, or the result id may not exist.</p>
+            <button type="button" onClick={() => navigate('/coding-round')} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">
+              Back To Coding Round
+            </button>
+          </section>
+        ) : null}
+
         {attempt && problem && aiUnavailable ? (
           <section className="rounded-[28px] border border-red-200 bg-card p-6 shadow-[0_24px_48px_rgba(0,0,0,0.06)] dark:border-red-500/50 sm:p-8">
             <p className="text-ui-label tracking-[0.22em] text-red-700 dark:text-red-300">EVALUATION UNAVAILABLE</p>
