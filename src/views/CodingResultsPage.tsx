@@ -1,7 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import type { EditorView } from '@codemirror/view';
+import { diffLines } from 'diff';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { DOMAIN_LABELS } from '../lib/prep';
 import { fetchCodingAttempt, submitCodingAttempt, type CodingAttempt } from '../lib/codingRound';
+
+const LazyCodeEditor = React.lazy(() => import('../components/LazyCodeEditor'));
 
 const SCORING_RUBRIC_ROWS = [
   ['1-2', 'Code does not compile or has fundamental logic errors that prevent it from running at all.'],
@@ -44,6 +48,49 @@ function edgeCasesClass(content: string) {
     : 'border-amber-200 dark:border-amber-500/50';
 }
 
+function buildLineComparison(userCode: string, modelCode: string) {
+  const userClasses: Record<number, string> = {};
+  const modelClasses: Record<number, string> = {};
+  let userLine = 1;
+  let modelLine = 1;
+  let match = 0;
+  let differ = 0;
+  let missing = 0;
+
+  for (const part of diffLines(userCode || '', modelCode || '')) {
+    const lines = part.value.split(/\r?\n/);
+    if (lines[lines.length - 1] === '') lines.pop();
+    const count = Math.max(lines.length, 1);
+    if (part.added) {
+      missing += count;
+      for (let index = 0; index < count; index += 1) {
+        modelClasses[modelLine] = 'automata-line-missing';
+        modelLine += 1;
+      }
+    } else if (part.removed) {
+      differ += count;
+      for (let index = 0; index < count; index += 1) {
+        userClasses[userLine] = 'automata-line-unique';
+        userLine += 1;
+      }
+    } else {
+      match += count;
+      for (let index = 0; index < count; index += 1) {
+        userClasses[userLine] = 'automata-line-match';
+        modelClasses[modelLine] = 'automata-line-match';
+        userLine += 1;
+        modelLine += 1;
+      }
+    }
+  }
+
+  for (let line = 1; line <= Math.max(userLine, modelLine); line += 1) {
+    if (!userClasses[line] && line < userLine) userClasses[line] = 'automata-line-different';
+  }
+
+  return { userClasses, modelClasses, stats: { match, differ, missing } };
+}
+
 export default function CodingResultsPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -56,7 +103,11 @@ export default function CodingResultsPage() {
   const [retryError, setRetryError] = useState<string | null>(null);
   const [showNotes, setShowNotes] = useState(() => new URLSearchParams(location.search).get('showNotes') === '1');
   const [scoreExplainerOpen, setScoreExplainerOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
   const notesSectionRef = useRef<HTMLElement | null>(null);
+  const userEditorRef = useRef<EditorView | null>(null);
+  const modelEditorRef = useRef<EditorView | null>(null);
+  const syncingScrollRef = useRef(false);
 
   useEffect(() => {
     setShowNotes(new URLSearchParams(location.search).get('showNotes') === '1');
@@ -105,6 +156,32 @@ export default function CodingResultsPage() {
       bestPractices: evaluation.score,
     };
   }, [evaluation]);
+  const comparison = useMemo(() => buildLineComparison(attempt?.code ?? '', evaluation?.modelSolutionCode ?? ''), [attempt?.code, evaluation?.modelSolutionCode]);
+
+  useEffect(() => {
+    if (!compareOpen) return undefined;
+    const userScroller = userEditorRef.current?.scrollDOM;
+    const modelScroller = modelEditorRef.current?.scrollDOM;
+    if (!userScroller || !modelScroller) return undefined;
+    const sync = (source: HTMLElement, target: HTMLElement) => {
+      if (syncingScrollRef.current) return;
+      syncingScrollRef.current = true;
+      const sourceMax = Math.max(1, source.scrollHeight - source.clientHeight);
+      const targetMax = Math.max(1, target.scrollHeight - target.clientHeight);
+      target.scrollTop = (source.scrollTop / sourceMax) * targetMax;
+      window.requestAnimationFrame(() => {
+        syncingScrollRef.current = false;
+      });
+    };
+    const onUserScroll = () => sync(userScroller, modelScroller);
+    const onModelScroll = () => sync(modelScroller, userScroller);
+    userScroller.addEventListener('scroll', onUserScroll);
+    modelScroller.addEventListener('scroll', onModelScroll);
+    return () => {
+      userScroller.removeEventListener('scroll', onUserScroll);
+      modelScroller.removeEventListener('scroll', onModelScroll);
+    };
+  }, [compareOpen]);
 
   const handleRetryEvaluation = async () => {
     if (!attempt || !problem || retrying) return;
@@ -225,6 +302,71 @@ export default function CodingResultsPage() {
                 </ul>
               </article>
             </section>
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => setCompareOpen((current) => !current)}
+                className="rounded-full border border-blueprint-line bg-card px-6 py-3 text-ui-label text-primary hover:bg-[#f5f3f3]"
+              >
+                {compareOpen ? 'Close Comparison' : 'Compare Code'}
+              </button>
+            </div>
+
+            {compareOpen ? (
+              <section className="rounded-2xl border border-blueprint-line bg-card p-4 sm:p-5">
+                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-blueprint-line bg-blueprint-bg px-4 py-3 text-ui-label">
+                  <span className="text-emerald-700">{comparison.stats.match} lines match</span>
+                  <span className="text-red-700">{comparison.stats.differ} lines differ</span>
+                  <span className="text-amber-700">{comparison.stats.missing} lines missing</span>
+                </div>
+                <div className="mt-4 grid overflow-hidden rounded-2xl border border-blueprint-line lg:grid-cols-2">
+                  <div className="border-b border-blueprint-line lg:border-b-0 lg:border-r">
+                    <div className="border-b border-blueprint-line bg-blueprint-bg px-4 py-3 text-ui-label text-primary">YOUR CODE</div>
+                    <div className="h-[520px]">
+                      <Suspense fallback={<div className="h-full animate-pulse bg-blueprint-bg" />}>
+                        <LazyCodeEditor
+                          value={attempt.code || ''}
+                          language={attempt.language}
+                          editable={false}
+                          height="100%"
+                          lineClasses={comparison.userClasses}
+                          onEditorReady={(view) => {
+                            userEditorRef.current = view;
+                          }}
+                          onChange={() => undefined}
+                        />
+                      </Suspense>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="border-b border-blueprint-line bg-blueprint-bg px-4 py-3 text-ui-label text-primary">MODEL SOLUTION</div>
+                    <div className="h-[520px]">
+                      <Suspense fallback={<div className="h-full animate-pulse bg-blueprint-bg" />}>
+                        <LazyCodeEditor
+                          value={evaluation.modelSolutionCode || evaluation.modelSolutionSketch || ''}
+                          language={attempt.language}
+                          editable={false}
+                          height="100%"
+                          lineClasses={comparison.modelClasses}
+                          onEditorReady={(view) => {
+                            modelEditorRef.current = view;
+                          }}
+                          onChange={() => undefined}
+                        />
+                      </Suspense>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCompareOpen(false)}
+                  className="mt-4 rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary hover:bg-[#f5f3f3]"
+                >
+                  Close Comparison
+                </button>
+              </section>
+            ) : null}
 
             <section className="rounded-2xl border border-[#b45309] bg-card p-6 dark:border-[#d97706]">
               <p className="text-ui-label text-[#b45309] dark:text-[#d97706]">Model Solution Sketch</p>

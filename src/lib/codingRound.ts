@@ -37,6 +37,7 @@ export type CodingEvaluation = {
   } | null;
   improvements: string[];
   modelSolutionSketch: string;
+  modelSolutionCode?: string;
 };
 
 export type CodingAttempt = {
