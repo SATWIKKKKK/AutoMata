@@ -218,7 +218,7 @@ export default function CodingRoundPage() {
     setSavingAttempt(true);
     const result = await saveCodingAttempt(attempt.id, { saved: true });
     setSavingAttempt(false);
-    if (result.ok) {
+    if (result.ok === true) {
       setSavedAt(result.data.savedAt);
       setHistoryItems((current) => current.map((item) => item.id === attempt.id ? { ...item, savedAt: result.data.savedAt } : item));
       return;
@@ -318,7 +318,7 @@ export default function CodingRoundPage() {
     if (!attempt) return;
     setNavigationState('previous');
     const history = await fetchCodingHistory(attempt.problem.domain, attempt.problem.difficulty);
-    if (!history.ok) {
+    if (history.ok === false) {
       setNavigationState(null);
       setError(history.error);
       return;
@@ -338,7 +338,7 @@ export default function CodingRoundPage() {
     setGenerating(true);
     const result = await generateCodingAttempt({ domain: attempt.problem.domain, difficulty: attempt.problem.difficulty, forceNew: true });
     setGenerating(false);
-    if (result.ok) {
+    if (result.ok === true) {
       navigate(`/round/coding/${encodeURIComponent(result.data.id)}`, { replace: true });
       return;
     }

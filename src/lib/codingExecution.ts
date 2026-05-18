@@ -50,32 +50,19 @@ function stripImportsAndExports(code: string) {
     .replace(/^\s*export\s+/gm, '');
 }
 
-function stripTypeScriptForExecution(code: string) {
-  return stripImportsAndExports(code)
-    .replace(/(^|\n)\s*interface\s+\w+\s*{[\s\S]*?\n}\s*/g, '\n')
-    .replace(/(^|\n)\s*type\s+\w+\s*=\s*[\s\S]*?;\s*/g, '\n')
-    .replace(/\b(const|let|var)\s+([A-Za-z_$][\w$]*)\s*:\s*([^=;]+)(?==)/g, '$1 $2')
-    .replace(/(\(|,)\s*([A-Za-z_$][\w$]*)\s*:\s*([^,)=]+)/g, '$1 $2')
-    .replace(/\)\s*:\s*([^{=>]+)/g, ')')
-    .replace(/([A-Za-z_$][\w$]*)<([A-Za-z_$][\w$\s,]*)>(?=\()/g, '$1')
-    .replace(/\s+as\s+[A-Za-z_$][\w$<>,\s\[\]|&.?-]*/g, '')
-    .trim();
-}
-
-function transformBrowserRunnableCode(code: string, language: CodingLanguage) {
-  if (language === 'typescript') {
-    return {
-      transformedCode: stripTypeScriptForExecution(code),
-      notices: ['Type errors are not checked - logic execution only.'],
-    };
-  }
-  if (language === 'javascript') {
-    return {
-      transformedCode: stripImportsAndExports(code).trim(),
-      notices: [] as string[],
-    };
-  }
-  return { transformedCode: code, notices: [] as string[] };
+async function transformBrowserRunnableCode(code: string, language: CodingLanguage, status?: StatusHandler) {
+  status?.('Preparing runtime...');
+  const { transform } = await import('sucrase');
+  const rawCode = stripImportsAndExports(code);
+  const result = transform(rawCode, {
+    transforms: language === 'typescript' ? ['typescript', 'jsx'] : ['jsx'],
+    jsxRuntime: 'classic',
+    production: false,
+  });
+  return {
+    transformedCode: result.code.trim(),
+    notices: language === 'typescript' ? ['Type errors are not checked - logic execution only.'] : [],
+  };
 }
 
 function ensureExecutionIframe() {
@@ -98,8 +85,20 @@ function ensureExecutionIframe() {
   return iframe;
 }
 
-function executeBrowserCode(code: string, language: 'javascript' | 'typescript') {
-  const { transformedCode, notices } = transformBrowserRunnableCode(code, language);
+async function executeBrowserCode(code: string, language: 'javascript' | 'typescript', status?: StatusHandler) {
+  let transformedCode = '';
+  let notices: string[] = [];
+  try {
+    const transformed = await transformBrowserRunnableCode(code, language, status);
+    transformedCode = transformed.transformedCode;
+    notices = transformed.notices;
+  } catch (error) {
+    return {
+      stdout: [],
+      stderr: [`Syntax Error: ${error instanceof Error ? error.message : String(error)}`],
+      notices: [],
+    };
+  }
   const iframe = ensureExecutionIframe();
   const runId = crypto.randomUUID();
 
@@ -134,7 +133,12 @@ function executeBrowserCode(code: string, language: 'javascript' | 'typescript')
 
     iframe.srcdoc = `<!doctype html>
 <html>
+  <head>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"><\/script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><\/script>
+  </head>
   <body>
+    <div id="root"></div>
     <script>
       const runId = ${escapeForInlineScript(runId)};
       const userCode = ${escapeForInlineScript(transformedCode)};
@@ -160,7 +164,7 @@ function executeBrowserCode(code: string, language: 'javascript' | 'typescript')
         window.parent.postMessage({ source: ${escapeForInlineScript(EXECUTION_MESSAGE_SOURCE)}, runId, stdout, stderr, notices: safeNotices }, '*');
       };
       console.log = (...args) => stdout.push(args.map(format).join(' '));
-      console.error = (...args) => stderr.push(args.map(format).join(' '));
+      console.error = (...args) => stderr.push('ERROR: ' + args.map(format).join(' '));
       window.onerror = (message, source, line, column, error) => {
         stderr.push(error && error.stack ? error.stack : String(message));
         send();
@@ -277,7 +281,7 @@ json.dumps({
 
 export async function executeCodingSnippet(code: string, language: CodingLanguage, status?: StatusHandler): Promise<CodingExecutionResult> {
   if (language === 'typescript' || language === 'javascript') {
-    return executeBrowserCode(code, language);
+    return executeBrowserCode(code, language, status);
   }
   if (language === 'python') {
     return executePython(code, status);
